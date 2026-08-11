@@ -20,6 +20,8 @@ pub fn run() {
             commands::projects::list_projects,
             commands::projects::save_project,
             commands::projects::delete_project,
+            commands::projects::detect_project,
+            commands::projects::pick_directory,
             // process
             commands::process::start_project,
             commands::process::stop_project,

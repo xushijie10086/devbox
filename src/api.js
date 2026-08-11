@@ -6,6 +6,8 @@ export const api = {
   listProjects: () => invoke("list_projects"),
   saveProject: (project) => invoke("save_project", { project }),
   deleteProject: (id) => invoke("delete_project", { id }),
+  detectProject: (path) => invoke("detect_project", { path }),
+  pickDirectory: () => invoke("pick_directory"),
 
   // 进程 / 生命周期
   startProject: (id) => invoke("start_project", { id }),
@@ -16,7 +18,7 @@ export const api = {
 
   // 端口
   listPorts: () => invoke("list_ports"),
-  killProcess: (pid) => invoke("kill_process", { pid }),
+  killProcess: (pid, port) => invoke("kill_process", { pid, port: port ?? null }),
 
   // hosts
   getHosts: () => invoke("get_hosts"),

@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { el, guard, toast } from "../ui.js";
+import { el, guard, toast, confirmDialog } from "../ui.js";
 
 export function mount(root) {
   let ports = [];
@@ -52,8 +52,8 @@ export function mount(root) {
   }
 
   async function kill(p) {
-    if (!confirm(`结束进程 ${p.process} (PID ${p.pid})，释放端口 ${p.port}？`)) return;
-    await guard(api.killProcess(p.pid), `已释放端口 ${p.port}`);
+    if (!(await confirmDialog(`结束进程 ${p.process} (PID ${p.pid})，释放端口 ${p.port}？`))) return;
+    await guard(api.killProcess(p.pid, p.port), `已释放端口 ${p.port}`);
     setTimeout(refresh, 400);
   }
 

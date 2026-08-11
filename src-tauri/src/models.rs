@@ -58,6 +58,18 @@ pub struct Config {
     pub profiles: Vec<Profile>,
 }
 
+/// 自动探测到的项目信息（用于表单一键填充）
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct DetectedProject {
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub start_command: Option<String>,
+    pub port: Option<u16>,
+    pub url: Option<String>,
+    /// 面向用户的简短说明，例如"已根据 package.json 自动填充"
+    pub summary: String,
+}
+
 /// 项目的运行时状态
 #[derive(Serialize, Clone, Debug)]
 pub struct ProjectStatus {

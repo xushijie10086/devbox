@@ -1,5 +1,13 @@
 import { api } from "../api.js";
-import { el, toast, guard, fmtUptime } from "../ui.js";
+import { el, toast, guard, fmtUptime, confirmDialog } from "../ui.js";
+import { icon } from "../icons.js";
+
+// 生成一个带 SVG 图标的操作按钮
+function iconBtn(name, title, onclick, extraClass = "") {
+  const btn = el("button", { class: `icon-btn ${extraClass}`.trim(), title, onclick });
+  btn.append(icon(name, 17));
+  return btn;
+}
 
 export function mount(root) {
   let projects = [];
@@ -60,18 +68,25 @@ export function mount(root) {
       : [el("button", { class: "run-btn", onclick: () => act(api.startProject(p.id), "已启动") }, "▶ 启动")];
 
     const quick = el("div", { class: "quick-actions" }, [
-      el("button", { class: "icon-btn", title: "在编辑器打开", onclick: () => guard(api.openInEditor(p.path, p.editor)) }, "🧩"),
-      p.url && el("button", { class: "icon-btn", title: "在浏览器打开", onclick: () => guard(api.openUrl(p.url)) }, "🌐"),
-      el("button", { class: "icon-btn", title: "在终端打开", onclick: () => guard(api.openTerminal(p.path)) }, "⌨️"),
-      el("button", { class: "icon-btn", title: "在访达显示", onclick: () => guard(api.revealInFinder(p.path)) }, "📁"),
-      el("button", { class: "icon-btn", title: "编辑", onclick: () => openEditor(p) }, "✎"),
-      el("button", { class: "icon-btn", title: "删除", onclick: () => removeProject(p) }, "🗑️"),
+      iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
+      p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
+      iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
+      iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
+      running && iconBtn("logsView", "查看日志", () => openLogModal(p)),
+      el("span", { class: "quick-spacer" }),
+      iconBtn("edit", "编辑", () => openEditor(p)),
+      iconBtn("trash", "删除", () => removeProject(p), "danger"),
+    ]);
+
+    const cmd = el("div", { class: "card-cmd" }, [
+      el("span", { class: "cmd-prompt" }, "$"),
+      el("code", {}, p.start_command),
     ]);
 
     return el("div", { class: "card" }, [
       el("div", { class: "card-top" }, [dot, el("span", { class: "card-title" }, p.name), kindBadge]),
       el("div", { class: "card-path", title: p.path }, p.path),
-      el("code", { class: "card-cmd" }, p.start_command),
+      cmd,
       el("div", { class: "card-meta" }, meta),
       el("div", { class: "card-actions" }, [...runBtns]),
       quick,
@@ -84,9 +99,44 @@ export function mount(root) {
   }
 
   async function removeProject(p) {
-    if (!confirm(`确定删除项目「${p.name}」？（会先停止其进程）`)) return;
+    if (!(await confirmDialog(`确定删除项目「${p.name}」？（会先停止其进程）`))) return;
     await guard(api.deleteProject(p.id), "已删除");
     await refresh();
+  }
+
+  // 单独查看某个项目的实时日志
+  function openLogModal(p) {
+    const body = el("pre", { class: "term-log" }, "加载日志中…");
+    let alive = true;
+    let interval = null;
+
+    async function pull() {
+      try {
+        const lines = await api.getLogs(p.id);
+        if (!alive) return;
+        if (!lines || lines.length === 0) {
+          body.textContent = "暂无日志输出";
+          return;
+        }
+        const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
+        body.innerHTML = "";
+        for (const l of lines) {
+          const line = el("div", { class: `log-line ${l.stream}` }, [
+            el("span", { class: "log-ts" }, l.ts),
+            el("span", { class: "log-text" }, l.text),
+          ]);
+          body.append(line);
+        }
+        if (atBottom) body.scrollTop = body.scrollHeight;
+      } catch (_) {}
+    }
+
+    showTermModal(`日志 · ${p.name}`, body, () => {
+      alive = false;
+      if (interval) clearInterval(interval);
+    });
+    pull();
+    interval = setInterval(pull, 1000);
   }
 
   function openEditor(p) {
@@ -111,11 +161,48 @@ export function mount(root) {
     const envText = Object.entries(data.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
     const envArea = el("textarea", { name: "env", rows: "3", placeholder: "KEY=VALUE，每行一个" }, envText);
 
+    // 工作目录行：输入框 + 「浏览选择目录」 + 「自动获取项目信息」按钮
+    const pathInput = el("input", { name: "path", type: "text", placeholder: "/Users/you/projects/app", value: data.path ?? "" });
+    const browseBtn = el("button", { class: "browse-btn", type: "button", title: "选择本地目录" });
+    browseBtn.append(icon("folder", 15), el("span", {}, "浏览"));
+    const detectBtn = el("button", { class: "detect-btn", type: "button" });
+    detectBtn.append(icon("magic", 15), el("span", {}, "自动获取"));
+    const pathRow = el("label", { class: "form-row" }, [
+      el("span", {}, "工作目录"),
+      el("div", { class: "path-row" }, [pathInput, browseBtn, detectBtn]),
+    ]);
+
+    // 「浏览」：弹出 macOS 原生选择文件夹对话框
+    browseBtn.onclick = async () => {
+      browseBtn.disabled = true;
+      try {
+        const picked = await api.pickDirectory();
+        if (picked) {
+          pathInput.value = picked.replace(/\/$/, "");
+          const nameInput = form.querySelector('[name="name"]');
+          if (nameInput && !nameInput.value.trim()) {
+            nameInput.value = picked.replace(/\/$/, "").split("/").pop();
+          }
+        }
+      } catch (e) {
+        toast(String(e), "error");
+      } finally {
+        browseBtn.disabled = false;
+      }
+    };
+
+    // 启动命令：终端命令行风格，可多行换行
+    const cmdInput = el("textarea", { name: "start_command", class: "cmd-field", rows: "2", placeholder: "npm run dev" }, data.start_command ?? "");
+    const cmdRow = el("label", { class: "form-row" }, [
+      el("span", {}, "启动命令"),
+      el("div", { class: "cmd-input" }, [el("span", { class: "cmd-prompt" }, "$"), cmdInput]),
+    ]);
+
     const form = el("div", { class: "form" }, [
       f("name", "名称", "我的前端"),
-      f("path", "工作目录", "/Users/you/projects/app"),
+      pathRow,
       el("label", { class: "form-row" }, [el("span", {}, "类型"), kindSel]),
-      f("start_command", "启动命令", "npm run dev"),
+      cmdRow,
       f("stop_command", "停止命令(可选)", "留空则由 DevBox 结束进程树"),
       f("port", "端口(可选)", "3000", "number"),
       f("url", "打开地址(可选)", "http://localhost:3000"),
@@ -123,6 +210,36 @@ export function mount(root) {
       el("label", { class: "form-row" }, [el("span", {}, "环境变量"), envArea]),
       el("label", { class: "form-row checkbox" }, [autoRestart, el("span", {}, "崩溃后自动重启")]),
     ]);
+
+    // 「自动获取项目信息」：读取目录里的配置文件回填表单
+    detectBtn.onclick = async () => {
+      const path = pathInput.value.trim();
+      if (!path) {
+        toast("请先填写工作目录", "error");
+        return;
+      }
+      detectBtn.disabled = true;
+      try {
+        const d = await api.detectProject(path);
+        const nameInput = form.querySelector('[name="name"]');
+        if (d.name && !nameInput.value.trim()) nameInput.value = d.name;
+        if (d.kind) kindSel.value = d.kind;
+        if (d.start_command) cmdInput.value = d.start_command;
+        if (d.port != null) {
+          const portInput = form.querySelector('[name="port"]');
+          if (portInput) portInput.value = d.port;
+        }
+        if (d.url) {
+          const urlInput = form.querySelector('[name="url"]');
+          if (urlInput && !urlInput.value.trim()) urlInput.value = d.url;
+        }
+        toast(d.summary || "已自动填充", "success");
+      } catch (e) {
+        toast(String(e), "error");
+      } finally {
+        detectBtn.disabled = false;
+      }
+    };
 
     showModal(isNew ? "新增项目" : "编辑项目", form, async () => {
       const get = (n) => form.querySelector(`[name="${n}"]`).value.trim();
@@ -190,4 +307,23 @@ export function showModal(title, body, onOk) {
     const ok = await onOk();
     if (ok !== false) close();
   };
+}
+
+// 只读的终端风格日志模态框（带关闭回调用于清理定时器）
+function showTermModal(title, body, onClose) {
+  const overlay = el("div", { class: "modal-overlay" });
+  const closeBtn = el("button", { class: "ghost-btn" }, "关闭");
+  const modal = el("div", { class: "modal modal-lg term-modal" }, [
+    el("div", { class: "modal-header" }, title),
+    el("div", { class: "modal-body" }, body),
+    el("div", { class: "modal-footer" }, [closeBtn]),
+  ]);
+  overlay.append(modal);
+  document.body.append(overlay);
+  const close = () => {
+    try { onClose && onClose(); } catch (_) {}
+    overlay.remove();
+  };
+  closeBtn.onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
 }

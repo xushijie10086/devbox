@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { el, guard, toast } from "../ui.js";
+import { el, guard, toast, confirmDialog } from "../ui.js";
 import { showModal } from "./projects.js";
 
 export function mount(root) {
@@ -56,7 +56,7 @@ export function mount(root) {
   }
 
   async function remove(pf) {
-    if (!confirm(`删除启动组「${pf.name}」？`)) return;
+    if (!(await confirmDialog(`删除启动组「${pf.name}」？`))) return;
     await guard(api.deleteProfile(pf.id), "已删除");
     refresh();
   }
