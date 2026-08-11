@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DevBox · 本地开发工具箱</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="logo">⬡</span>
+          <span class="brand-name">DevBox</span>
+        </div>
+        <nav id="nav">
+          <button class="nav-item active" data-view="projects">📦 项目</button>
+          <button class="nav-item" data-view="profiles">🚀 启动组</button>
+          <button class="nav-item" data-view="ports">🔌 端口</button>
+          <button class="nav-item" data-view="services">🗄️ 服务</button>
+          <button class="nav-item" data-view="hosts">🌐 Hosts</button>
+          <button class="nav-item" data-view="logs">📜 日志</button>
+        </nav>
+        <div class="sidebar-footer">
+          <button id="refresh-all" class="ghost-btn">↻ 刷新</button>
+        </div>
+      </aside>
+      <main class="content">
+        <div id="view-root"></div>
+      </main>
+    </div>
+    <div id="toast-root"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

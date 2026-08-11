@@ -1,0 +1,48 @@
+import { invoke } from "@tauri-apps/api/core";
+
+// 对后端命令的一层薄封装，集中管理命令名，避免拼写漂移
+export const api = {
+  // 项目
+  listProjects: () => invoke("list_projects"),
+  saveProject: (project) => invoke("save_project", { project }),
+  deleteProject: (id) => invoke("delete_project", { id }),
+
+  // 进程 / 生命周期
+  startProject: (id) => invoke("start_project", { id }),
+  stopProject: (id) => invoke("stop_project", { id }),
+  restartProject: (id) => invoke("restart_project", { id }),
+  projectStatuses: () => invoke("project_statuses"),
+  healthTick: () => invoke("health_tick"),
+
+  // 端口
+  listPorts: () => invoke("list_ports"),
+  killProcess: (pid) => invoke("kill_process", { pid }),
+
+  // hosts
+  getHosts: () => invoke("get_hosts"),
+  getHostsRaw: () => invoke("get_hosts_raw"),
+  saveHosts: (entries) => invoke("save_hosts", { entries }),
+
+  // brew 服务
+  listServices: () => invoke("list_services"),
+  startService: (name) => invoke("start_service", { name }),
+  stopService: (name) => invoke("stop_service", { name }),
+  restartService: (name) => invoke("restart_service", { name }),
+
+  // 日志
+  getLogs: (projectId) => invoke("get_logs", { projectId }),
+  clearLogs: (projectId) => invoke("clear_logs", { projectId }),
+
+  // 启动组
+  listProfiles: () => invoke("list_profiles"),
+  saveProfile: (profile) => invoke("save_profile", { profile }),
+  deleteProfile: (id) => invoke("delete_profile", { id }),
+  startProfile: (id) => invoke("start_profile", { id }),
+  stopProfile: (id) => invoke("stop_profile", { id }),
+
+  // 快捷入口
+  openInEditor: (path, editor) => invoke("open_in_editor", { path, editor }),
+  openUrl: (url) => invoke("open_url", { url }),
+  openTerminal: (path) => invoke("open_terminal", { path }),
+  revealInFinder: (path) => invoke("reveal_in_finder", { path }),
+};
