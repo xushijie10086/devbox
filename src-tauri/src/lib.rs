@@ -1,4 +1,5 @@
 mod commands;
+mod http_api;
 mod models;
 mod state;
 
@@ -13,6 +14,8 @@ pub fn run() {
         .manage(AppState::new())
         .setup(|app| {
             build_tray(app.handle())?;
+            // 启动本地 HTTP 桥接服务，供 MCP 适配器 / agent 调用
+            http_api::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

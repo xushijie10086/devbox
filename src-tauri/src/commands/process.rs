@@ -34,7 +34,12 @@ pub fn restart_project(id: String, state: State<AppState>) -> Result<(), String>
 /// 获取所有项目的运行时状态（含 CPU / 内存 / 端口探测）
 #[tauri::command]
 pub fn project_statuses(state: State<AppState>) -> Vec<ProjectStatus> {
-    reap_dead(state.inner());
+    compute_statuses(state.inner())
+}
+
+/// 计算所有项目的运行时状态（供前端命令与本地 HTTP 服务共用）
+pub fn compute_statuses(state: &AppState) -> Vec<ProjectStatus> {
+    reap_dead(state);
 
     let projects = state.config.lock().unwrap().projects.clone();
     let procs = state.procs.lock().unwrap();
