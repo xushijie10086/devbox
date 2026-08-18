@@ -29,6 +29,27 @@ pub fn save_project(mut project: Project, state: State<AppState>) -> Result<Proj
     Ok(project)
 }
 
+/// 按前端拖拽后的 id 顺序重排项目列表
+/// 传入的 id 中不存在的会被忽略；未出现在 ids 里的项目保持原有相对顺序，追加在后面
+#[tauri::command]
+pub fn reorder_projects(ids: Vec<String>, state: State<AppState>) -> Result<Vec<Project>, String> {
+    let projects = {
+        let mut cfg = state.config.lock().unwrap();
+        let mut rest = std::mem::take(&mut cfg.projects);
+        let mut ordered: Vec<Project> = Vec::with_capacity(rest.len());
+        for id in &ids {
+            if let Some(i) = rest.iter().position(|p| &p.id == id) {
+                ordered.push(rest.remove(i));
+            }
+        }
+        ordered.extend(rest);
+        cfg.projects = ordered;
+        cfg.projects.clone()
+    };
+    state.persist()?;
+    Ok(projects)
+}
+
 /// 删除项目
 #[tauri::command]
 pub fn delete_project(id: String, state: State<AppState>) -> Result<(), String> {

@@ -13,6 +13,7 @@ export function mount(root) {
   let projects = [];
   let statuses = {};
   let timer = null;
+  let drag = null; // 拖拽上下文，见 startDrag
 
   const list = el("div", { class: "card-grid" });
   const header = el("div", { class: "view-header" }, [
@@ -20,6 +21,102 @@ export function mount(root) {
     el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
   ]);
   root.append(header, list);
+
+  // 用 Pointer 事件手写拖拽：macOS WKWebView 对 HTML5 drag-and-drop 支持不完整，
+  // 拖拽途中移动源节点会被忽略，导致「能拖但插不进去」。
+  function startDrag(card, e) {
+    if (e.button !== 0 || drag) return;
+    e.preventDefault();
+
+    const rect = card.getBoundingClientRect();
+    const placeholder = el("div", { class: "card-placeholder" });
+    placeholder.style.height = `${rect.height}px`;
+
+    drag = { card, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+
+    // 占位块留在原位撑住网格，卡片移到 body 上用 fixed 跟随指针
+    list.insertBefore(placeholder, card);
+    card.style.width = `${rect.width}px`;
+    card.style.height = `${rect.height}px`;
+    card.style.left = `${rect.left}px`;
+    card.style.top = `${rect.top}px`;
+    card.classList.add("dragging");
+    document.body.append(card);
+    document.body.classList.add("dragging-active");
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", endDrag);
+    document.addEventListener("pointercancel", endDrag);
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    const { card, placeholder } = drag;
+    card.style.left = `${e.clientX - drag.dx}px`;
+    card.style.top = `${e.clientY - drag.dy}px`;
+
+    const after = cardAfterPoint(e.clientX, e.clientY);
+    if (after) {
+      if (after !== placeholder.nextElementSibling) list.insertBefore(placeholder, after);
+    } else if (list.lastElementChild !== placeholder) {
+      list.append(placeholder);
+    }
+    autoScroll(e.clientY);
+  }
+
+  async function endDrag() {
+    if (!drag) return;
+    const { card, placeholder } = drag;
+    drag = null;
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", endDrag);
+    document.removeEventListener("pointercancel", endDrag);
+    document.body.classList.remove("dragging-active");
+
+    // 卡片落回占位块的位置
+    card.classList.remove("dragging");
+    card.removeAttribute("style");
+    list.insertBefore(card, placeholder);
+    placeholder.remove();
+
+    await commitOrder();
+    render(); // 补上拖拽期间被跳过的状态刷新
+  }
+
+  /** 拖到视口上下边缘时滚动内容区 */
+  function autoScroll(y) {
+    const scroller = root.closest(".content") || root.parentElement;
+    if (!scroller) return;
+    const r = scroller.getBoundingClientRect();
+    if (y < r.top + 60) scroller.scrollTop -= 12;
+    else if (y > r.bottom - 60) scroller.scrollTop += 12;
+  }
+
+  /** 找出应排在指针位置之后的那张卡片（网格布局：先比较行，再比较列） */
+  function cardAfterPoint(x, y) {
+    for (const c of list.querySelectorAll(".card")) {
+      const r = c.getBoundingClientRect();
+      if (y < r.top) return c; // 指针在这张卡片所在行之上
+      if (y <= r.bottom && x < r.left + r.width / 2) return c; // 同一行且在左半边
+    }
+    return null;
+  }
+
+  // 把当前 DOM 顺序同步回内存并持久化
+  async function commitOrder() {
+    const ids = [...list.querySelectorAll(".card")].map((c) => c.dataset.id);
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const next = ids.map((id) => byId.get(id)).filter(Boolean);
+    if (next.length !== projects.length) return; // 顺序异常时放弃，等下次刷新纠正
+    if (next.every((p, i) => p.id === projects[i].id)) return; // 顺序没变
+    projects = next;
+    try {
+      await api.reorderProjects(ids);
+    } catch (e) {
+      toast(String(e), "error");
+      await refresh();
+    }
+  }
 
   async function refresh() {
     projects = await api.listProjects();
@@ -33,6 +130,7 @@ export function mount(root) {
   }
 
   function render() {
+    if (drag) return; // 拖拽过程中不重建 DOM，避免打断
     list.innerHTML = "";
     if (projects.length === 0) {
       list.append(el("div", { class: "empty" }, "还没有项目。点击右上角「新增项目」注册你的第一个项目。"));
@@ -83,14 +181,22 @@ export function mount(root) {
       el("code", {}, p.start_command),
     ]);
 
-    return el("div", { class: "card" }, [
-      el("div", { class: "card-top" }, [dot, el("span", { class: "card-title" }, p.name), kindBadge]),
+    // 拖拽手柄：按住它才让卡片可拖，避免影响卡片里的文本选择与按钮
+    const handle = el("span", { class: "drag-handle", title: "拖动调整排序" });
+    handle.append(icon("grip", 16));
+
+    const card = el("div", { class: "card", "data-id": p.id }, [
+      el("div", { class: "card-top" }, [handle, dot, el("span", { class: "card-title" }, p.name), kindBadge]),
       el("div", { class: "card-path", title: p.path }, p.path),
       cmd,
       el("div", { class: "card-meta" }, meta),
       el("div", { class: "card-actions" }, [...runBtns]),
       quick,
     ]);
+
+    handle.addEventListener("pointerdown", (e) => startDrag(card, e));
+
+    return card;
   }
 
   async function act(promise, okMsg) {
@@ -281,7 +387,10 @@ export function mount(root) {
     } catch (_) {}
   }, 2500);
 
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    if (drag) endDrag(); // 切换视图时收尾，避免卡片残留在 body 上
+  };
 }
 
 function kindLabel(k) {
