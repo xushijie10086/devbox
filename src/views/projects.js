@@ -13,7 +13,7 @@ export function mount(root) {
   let projects = [];
   let statuses = {};
   let timer = null;
-  let dragging = null; // 正在拖拽的卡片元素
+  let drag = null; // 拖拽上下文，见 startDrag
 
   const list = el("div", { class: "card-grid" });
   const header = el("div", { class: "view-header" }, [
@@ -22,26 +22,81 @@ export function mount(root) {
   ]);
   root.append(header, list);
 
-  // 拖拽经过时把被拖卡片插到鼠标位置对应的顺序上
-  list.addEventListener("dragover", (e) => {
-    if (!dragging) return;
+  // 用 Pointer 事件手写拖拽：macOS WKWebView 对 HTML5 drag-and-drop 支持不完整，
+  // 拖拽途中移动源节点会被忽略，导致「能拖但插不进去」。
+  function startDrag(card, e) {
+    if (e.button !== 0 || drag) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    const after = cardAfterPoint(e.clientX, e.clientY);
-    if (after === dragging) return;
-    if (after) list.insertBefore(dragging, after);
-    else list.append(dragging);
-  });
-  list.addEventListener("drop", (e) => {
-    if (dragging) e.preventDefault();
-  });
 
-  /** 找出应排在鼠标位置之后的那张卡片（网格布局：先比较行，再比较列） */
+    const rect = card.getBoundingClientRect();
+    const placeholder = el("div", { class: "card-placeholder" });
+    placeholder.style.height = `${rect.height}px`;
+
+    drag = { card, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+
+    // 占位块留在原位撑住网格，卡片移到 body 上用 fixed 跟随指针
+    list.insertBefore(placeholder, card);
+    card.style.width = `${rect.width}px`;
+    card.style.height = `${rect.height}px`;
+    card.style.left = `${rect.left}px`;
+    card.style.top = `${rect.top}px`;
+    card.classList.add("dragging");
+    document.body.append(card);
+    document.body.classList.add("dragging-active");
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", endDrag);
+    document.addEventListener("pointercancel", endDrag);
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    const { card, placeholder } = drag;
+    card.style.left = `${e.clientX - drag.dx}px`;
+    card.style.top = `${e.clientY - drag.dy}px`;
+
+    const after = cardAfterPoint(e.clientX, e.clientY);
+    if (after) {
+      if (after !== placeholder.nextElementSibling) list.insertBefore(placeholder, after);
+    } else if (list.lastElementChild !== placeholder) {
+      list.append(placeholder);
+    }
+    autoScroll(e.clientY);
+  }
+
+  async function endDrag() {
+    if (!drag) return;
+    const { card, placeholder } = drag;
+    drag = null;
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", endDrag);
+    document.removeEventListener("pointercancel", endDrag);
+    document.body.classList.remove("dragging-active");
+
+    // 卡片落回占位块的位置
+    card.classList.remove("dragging");
+    card.removeAttribute("style");
+    list.insertBefore(card, placeholder);
+    placeholder.remove();
+
+    await commitOrder();
+    render(); // 补上拖拽期间被跳过的状态刷新
+  }
+
+  /** 拖到视口上下边缘时滚动内容区 */
+  function autoScroll(y) {
+    const scroller = root.closest(".content") || root.parentElement;
+    if (!scroller) return;
+    const r = scroller.getBoundingClientRect();
+    if (y < r.top + 60) scroller.scrollTop -= 12;
+    else if (y > r.bottom - 60) scroller.scrollTop += 12;
+  }
+
+  /** 找出应排在指针位置之后的那张卡片（网格布局：先比较行，再比较列） */
   function cardAfterPoint(x, y) {
-    const cards = [...list.querySelectorAll(".card:not(.dragging)")];
-    for (const c of cards) {
+    for (const c of list.querySelectorAll(".card")) {
       const r = c.getBoundingClientRect();
-      if (y < r.top) return c; // 鼠标在这张卡片所在行之上
+      if (y < r.top) return c; // 指针在这张卡片所在行之上
       if (y <= r.bottom && x < r.left + r.width / 2) return c; // 同一行且在左半边
     }
     return null;
@@ -75,7 +130,7 @@ export function mount(root) {
   }
 
   function render() {
-    if (dragging) return; // 拖拽过程中不重建 DOM，避免打断
+    if (drag) return; // 拖拽过程中不重建 DOM，避免打断
     list.innerHTML = "";
     if (projects.length === 0) {
       list.append(el("div", { class: "empty" }, "还没有项目。点击右上角「新增项目」注册你的第一个项目。"));
@@ -139,20 +194,7 @@ export function mount(root) {
       quick,
     ]);
 
-    handle.addEventListener("mousedown", () => { card.draggable = true; });
-    handle.addEventListener("mouseup", () => { card.draggable = false; });
-    card.addEventListener("dragstart", (e) => {
-      dragging = card;
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", p.id); // Firefox 需要有数据才会开始拖拽
-      requestAnimationFrame(() => card.classList.add("dragging"));
-    });
-    card.addEventListener("dragend", async () => {
-      card.classList.remove("dragging");
-      card.draggable = false;
-      dragging = null;
-      await commitOrder();
-    });
+    handle.addEventListener("pointerdown", (e) => startDrag(card, e));
 
     return card;
   }
@@ -345,7 +387,10 @@ export function mount(root) {
     } catch (_) {}
   }, 2500);
 
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    if (drag) endDrag(); // 切换视图时收尾，避免卡片残留在 body 上
+  };
 }
 
 function kindLabel(k) {
