@@ -13,6 +13,7 @@ export function mount(root) {
   let projects = [];
   let statuses = {};
   let timer = null;
+  let dragging = null; // 正在拖拽的卡片元素
 
   const list = el("div", { class: "card-grid" });
   const header = el("div", { class: "view-header" }, [
@@ -20,6 +21,47 @@ export function mount(root) {
     el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
   ]);
   root.append(header, list);
+
+  // 拖拽经过时把被拖卡片插到鼠标位置对应的顺序上
+  list.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const after = cardAfterPoint(e.clientX, e.clientY);
+    if (after === dragging) return;
+    if (after) list.insertBefore(dragging, after);
+    else list.append(dragging);
+  });
+  list.addEventListener("drop", (e) => {
+    if (dragging) e.preventDefault();
+  });
+
+  /** 找出应排在鼠标位置之后的那张卡片（网格布局：先比较行，再比较列） */
+  function cardAfterPoint(x, y) {
+    const cards = [...list.querySelectorAll(".card:not(.dragging)")];
+    for (const c of cards) {
+      const r = c.getBoundingClientRect();
+      if (y < r.top) return c; // 鼠标在这张卡片所在行之上
+      if (y <= r.bottom && x < r.left + r.width / 2) return c; // 同一行且在左半边
+    }
+    return null;
+  }
+
+  // 把当前 DOM 顺序同步回内存并持久化
+  async function commitOrder() {
+    const ids = [...list.querySelectorAll(".card")].map((c) => c.dataset.id);
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const next = ids.map((id) => byId.get(id)).filter(Boolean);
+    if (next.length !== projects.length) return; // 顺序异常时放弃，等下次刷新纠正
+    if (next.every((p, i) => p.id === projects[i].id)) return; // 顺序没变
+    projects = next;
+    try {
+      await api.reorderProjects(ids);
+    } catch (e) {
+      toast(String(e), "error");
+      await refresh();
+    }
+  }
 
   async function refresh() {
     projects = await api.listProjects();
@@ -33,6 +75,7 @@ export function mount(root) {
   }
 
   function render() {
+    if (dragging) return; // 拖拽过程中不重建 DOM，避免打断
     list.innerHTML = "";
     if (projects.length === 0) {
       list.append(el("div", { class: "empty" }, "还没有项目。点击右上角「新增项目」注册你的第一个项目。"));
@@ -83,14 +126,35 @@ export function mount(root) {
       el("code", {}, p.start_command),
     ]);
 
-    return el("div", { class: "card" }, [
-      el("div", { class: "card-top" }, [dot, el("span", { class: "card-title" }, p.name), kindBadge]),
+    // 拖拽手柄：按住它才让卡片可拖，避免影响卡片里的文本选择与按钮
+    const handle = el("span", { class: "drag-handle", title: "拖动调整排序" });
+    handle.append(icon("grip", 16));
+
+    const card = el("div", { class: "card", "data-id": p.id }, [
+      el("div", { class: "card-top" }, [handle, dot, el("span", { class: "card-title" }, p.name), kindBadge]),
       el("div", { class: "card-path", title: p.path }, p.path),
       cmd,
       el("div", { class: "card-meta" }, meta),
       el("div", { class: "card-actions" }, [...runBtns]),
       quick,
     ]);
+
+    handle.addEventListener("mousedown", () => { card.draggable = true; });
+    handle.addEventListener("mouseup", () => { card.draggable = false; });
+    card.addEventListener("dragstart", (e) => {
+      dragging = card;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", p.id); // Firefox 需要有数据才会开始拖拽
+      requestAnimationFrame(() => card.classList.add("dragging"));
+    });
+    card.addEventListener("dragend", async () => {
+      card.classList.remove("dragging");
+      card.draggable = false;
+      dragging = null;
+      await commitOrder();
+    });
+
+    return card;
   }
 
   async function act(promise, okMsg) {

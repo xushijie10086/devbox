@@ -87,6 +87,16 @@ button { font-family: inherit; }
 .quick-actions { display: flex; align-items: center; gap: 3px; border-top: 1px solid var(--border); padding-top: 8px; }
 .quick-spacer { flex: 1; }
 
+/* 项目卡片拖拽排序 */
+.drag-handle {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: -2px 2px -2px -4px; padding: 2px; border-radius: 5px;
+  color: #4a505e; cursor: grab; flex-shrink: 0; transition: color .15s, background .15s;
+}
+.drag-handle:hover { color: var(--text); background: var(--panel-2); }
+.drag-handle:active { cursor: grabbing; }
+.card.dragging { opacity: .4; border-color: var(--accent); }
+
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 5px; }
 .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .dot.off { background: #4a505e; }

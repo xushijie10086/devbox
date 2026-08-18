@@ -47,6 +47,9 @@ const PATHS = {
   // 表单：自动获取（魔法棒 / 星火）
   magic:
     '<path d="M15 4l1.2 2.8L19 8l-2.8 1.2L15 12l-1.2-2.8L11 8l2.8-1.2L15 4z"/><path d="M6 13l.8 1.9L8.7 15.7 6.8 16.5 6 18.4l-.8-1.9L3.3 15.7l1.9-.8L6 13z"/>',
+  // 卡片：拖拽手柄（六点）
+  grip:
+    '<g fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></g>',
   // 底部：刷新
   refresh:
     '<path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 3.5V8h-4.5"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M4 20.5V16h4.5"/>',
