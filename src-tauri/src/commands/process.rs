@@ -429,6 +429,9 @@ fn record_exit(state: &AppState, id: &str, status: std::process::ExitStatus) {
         message.push_str(&tail.join("\n"));
     }
     let name = get_project(state, id).map(|p| p.name).unwrap_or_else(|| id.to_string());
+    // 窗口不在前台时，用系统通知告诉用户项目崩了
+    let (title, body) = crate::notify::crash_text(&name, &reason, &tail);
+    crate::notify::notify(state, &title, &body, false);
     let mut events = state.exit_events.lock().unwrap();
     events.push(ExitEvent {
         id: id.to_string(),

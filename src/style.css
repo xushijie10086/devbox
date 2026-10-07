@@ -41,7 +41,9 @@ body { background: var(--bg); color: var(--text); font-size: 14px; }
 .nav-item.active .icon { color: #fff; }
 .icon { flex-shrink: 0; }
 .ghost-btn .icon { vertical-align: -3px; margin-right: 5px; }
-.sidebar-footer { padding-top: 10px; border-top: 1px solid var(--border); }
+.sidebar-footer { padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.sidebar-footer .ghost-btn { text-align: left; }
+#notify-toggle.off { color: var(--dim); }
 
 /* 主体 */
 .content { flex: 1; overflow-y: auto; padding: 22px 26px; }

@@ -15,6 +15,9 @@ pub struct RunningProc {
     pub started_at: Instant,
 }
 
+/// 应用句柄：后台线程（巡检、托盘菜单回调）要发系统通知、刷新托盘时用
+pub static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
 /// 全局应用状态
 pub struct AppState {
     pub config: Mutex<Config>,

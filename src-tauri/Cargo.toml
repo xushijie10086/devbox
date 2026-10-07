@@ -23,6 +23,7 @@ sysinfo = "0.30"
 dirs = "5"
 tiny_http = "0.12"
 ctrlc = { version = "3", features = ["termination"] }
+tauri-plugin-notification = "2"
 
 [features]
 # 默认无额外特性

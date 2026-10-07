@@ -51,6 +51,7 @@ pub fn spawn_supervisor(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
         tick(&app.state::<AppState>());
+        crate::tray::refresh(&app); // 项目启停 / 增删 / 改名后，托盘菜单跟着更新
     });
 }
 

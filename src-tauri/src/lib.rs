@@ -1,19 +1,21 @@
 mod commands;
 mod http_api;
 mod models;
+mod notify;
 mod state;
+mod tray;
 
 use state::AppState;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::new())
         .setup(|app| {
-            build_tray(app.handle())?;
+            let _ = state::APP_HANDLE.set(app.handle().clone());
+            tray::build(app.handle())?;
             // 后台巡检：窗口关着也能发现项目崩溃，并持续记录「正在运行的项目」
             commands::lifecycle::spawn_supervisor(app.handle().clone());
             // Ctrl+C / kill：先停掉所有项目再退出，不留孤儿进程
@@ -47,6 +49,9 @@ pub fn run() {
             commands::process::project_statuses,
             commands::process::health_tick,
             commands::process::take_exit_events,
+            // 系统通知
+            notify::get_notifications_enabled,
+            notify::set_notifications_enabled,
             // 应用生命周期
             commands::lifecycle::quit_app,
             commands::lifecycle::pending_restore,
@@ -90,33 +95,4 @@ pub fn run() {
         tauri::RunEvent::Exit => commands::lifecycle::handle_exit(&app.state::<AppState>()),
         _ => {}
     });
-}
-
-/// 构建菜单栏托盘图标与菜单
-fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示 DevBox", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-
-    let mut builder = TrayIconBuilder::with_id("main")
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .tooltip("DevBox")
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        });
-
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
-    }
-
-    builder.build(app)?;
-    Ok(())
 }

@@ -21,6 +21,10 @@ export const api = {
   projectStatuses: () => invoke("project_statuses"),
   healthTick: () => invoke("health_tick"),
 
+  // 系统通知开关
+  getNotificationsEnabled: () => invoke("get_notifications_enabled"),
+  setNotificationsEnabled: (enabled) => invoke("set_notifications_enabled", { enabled }),
+
   // 应用生命周期：退出确认 / 启动时恢复上次运行的项目
   quitApp: () => invoke("quit_app"),
   pendingRestore: () => invoke("pending_restore"),

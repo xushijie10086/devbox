@@ -32,6 +32,11 @@ const PATHS = {
   // 卡片：在访达显示（文件夹）
   folder:
     '<path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>',
+  // 通知开 / 关（铃铛）
+  bell:
+    '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  bellOff:
+    '<path d="M6 16V11c0-1 .2-1.9.6-2.7M9 5.6A6 6 0 0 1 18 11v5l1.5 2H8"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 4l16 16"/>',
   // 分支（两个节点 + 分叉线）
   branch:
     '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10"/><path d="M18 10c0 5-12 3-12 7"/>',

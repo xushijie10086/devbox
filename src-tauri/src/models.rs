@@ -66,6 +66,9 @@ pub struct Config {
     /// 下次启动据此提示是否恢复
     #[serde(default)]
     pub last_running: Vec<String>,
+    /// 关闭系统通知（默认开启，所以字段取反，缺省即开启）
+    #[serde(default)]
+    pub mute_notifications: bool,
 }
 
 /// 自动探测到的项目信息（用于表单一键填充）

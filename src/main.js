@@ -25,6 +25,28 @@ for (const btn of nav.querySelectorAll(".nav-item")) {
 }
 const refreshBtn = document.getElementById("refresh-all");
 if (refreshBtn) refreshBtn.prepend(icon("refresh", 16));
+// 通知开关：显示当前状态，点击切换（托盘菜单里也能切，窗口获得焦点时同步）
+const notifyBtn = document.getElementById("notify-toggle");
+async function syncNotifyBtn() {
+  try {
+    const on = await api.getNotificationsEnabled();
+    notifyBtn.classList.toggle("off", !on);
+    notifyBtn.replaceChildren(icon(on ? "bell" : "bellOff", 16), document.createTextNode(on ? "通知：开" : "通知：关"));
+  } catch (_) {}
+}
+notifyBtn.addEventListener("click", async () => {
+  try {
+    const on = await api.getNotificationsEnabled();
+    await api.setNotificationsEnabled(!on);
+    toast(on ? "已关闭系统通知" : "已开启系统通知（项目崩溃时，窗口不在前台会弹出）", "info");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  await syncNotifyBtn();
+});
+window.addEventListener("focus", syncNotifyBtn);
+syncNotifyBtn();
+
 let cleanup = null;
 let currentName = "projects";
 
