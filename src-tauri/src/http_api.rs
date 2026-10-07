@@ -10,7 +10,6 @@ use crate::commands::{hosts, ports, process, projects, services};
 use crate::models::{HostEntry, Project};
 use crate::state::AppState;
 use serde_json::{json, Value};
-use std::io::Read;
 use tauri::{AppHandle, Manager};
 use tiny_http::{Header, Method, Response, Server};
 
@@ -209,11 +208,7 @@ fn resolve_project(state: &AppState, arg: &Value) -> Option<Project> {
 
 /// 读取项目日志缓冲，可选只取末尾 tail 行
 fn read_logs(state: &AppState, id: &str, tail: Option<usize>) -> Vec<crate::models::LogLine> {
-    let logs = state.logs.lock().unwrap();
-    let all: Vec<_> = match logs.get(id) {
-        Some(buf) => buf.lock().unwrap().iter().cloned().collect(),
-        None => Vec::new(),
-    };
+    let all = state.log_buffer(id).snapshot();
     match tail {
         Some(n) if n < all.len() => all[all.len() - n..].to_vec(),
         _ => all,

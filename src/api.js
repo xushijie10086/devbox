@@ -49,8 +49,10 @@ export const api = {
   restartService: (name) => invoke("restart_service", { name }),
 
   // 日志
-  getLogs: (projectId) => invoke("get_logs", { projectId }),
+  // 增量拉取：after 是已见过的最大序号，epoch 是记住的纪元（「清空」会让纪元变化）
+  getLogs: (projectId, after = null, epoch = null) => invoke("get_logs", { projectId, after, epoch }),
   clearLogs: (projectId) => invoke("clear_logs", { projectId }),
+  logFilePath: (projectId) => invoke("log_file_path", { projectId }),
 
 
   // 脚本 / 构建任务

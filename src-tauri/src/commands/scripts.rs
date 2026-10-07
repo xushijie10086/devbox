@@ -349,7 +349,7 @@ mod tests {
     }
 
     fn logs(st: &AppState) -> String {
-        st.log_buffer("p").lock().unwrap().iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n")
+        st.log_buffer("p").snapshot().into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
     #[test]

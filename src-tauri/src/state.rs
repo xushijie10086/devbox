@@ -1,12 +1,10 @@
-use crate::models::{Config, ExitEvent, LogLine};
-use std::collections::{HashMap, VecDeque};
+use crate::logstore::{file_name_for, LogBuffer, LogStore};
+use crate::models::{Config, ExitEvent};
+use std::collections::HashMap;
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-
-/// 每个项目最多保留的日志行数
-pub const MAX_LOG_LINES: usize = 2000;
 
 /// 一个正在运行的项目进程
 pub struct RunningProc {
@@ -34,7 +32,7 @@ pub struct AppState {
     /// project_id -> 运行中的进程
     pub procs: Mutex<HashMap<String, RunningProc>>,
     /// project_id -> 日志缓冲（读线程写入，前端轮询读取）
-    pub logs: Mutex<HashMap<String, Arc<Mutex<VecDeque<LogLine>>>>>,
+    pub logs: Mutex<HashMap<String, LogBuffer>>,
     /// 正在做「启动确认」的项目 id：巡检的 reap_dead 不去回收它们，
     /// 由确认流程自己观察并报告结果（否则进程一退出就可能被抢先收走，确认流程会误报「被停止」）
     pub verifying: Mutex<std::collections::HashSet<String>>,
@@ -91,8 +89,15 @@ impl AppState {
     /// 测试用：用给定配置构造状态，配置文件写到临时目录
     #[cfg(test)]
     pub fn for_test(config: Config) -> Self {
-        let path = std::env::temp_dir().join(format!("devbox-test-config-{:?}.json", std::thread::current().id()));
-        Self::with_config(config, path)
+        // 每个测试状态用独立的全新目录：配置和日志文件都落在里面，互不串味，也不会读到上次运行的残留
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "devbox-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self::with_config(config, dir.join("config.json"))
     }
 
     /// 获取（必要时创建）某项目的启动锁
@@ -116,11 +121,16 @@ impl AppState {
         Ok(())
     }
 
-    /// 获取（必要时创建）某项目的日志缓冲
-    pub fn log_buffer(&self, project_id: &str) -> Arc<Mutex<VecDeque<LogLine>>> {
+    /// 日志文件所在目录（与配置文件同级的 logs/）
+    pub fn log_dir(&self) -> std::path::PathBuf {
+        self.config_path.parent().map(|p| p.to_path_buf()).unwrap_or_default().join("logs")
+    }
+
+    /// 获取（必要时创建）某项目的日志仓；首次创建时会载入上次运行留下的历史日志
+    pub fn log_buffer(&self, project_id: &str) -> LogBuffer {
         let mut logs = self.logs.lock().unwrap();
         logs.entry(project_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(VecDeque::with_capacity(MAX_LOG_LINES))))
+            .or_insert_with(|| Arc::new(LogStore::new(Some(self.log_dir().join(file_name_for(project_id))))))
             .clone()
     }
 }

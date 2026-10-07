@@ -1,10 +1,9 @@
-use crate::models::{ExitEvent, LogLine, Project, ProjectStatus, StartOutcome};
-use crate::state::{AppState, RunningProc, MAX_LOG_LINES};
-use std::collections::VecDeque;
+use crate::models::{ExitEvent, Project, ProjectStatus, StartOutcome};
+use crate::logstore::LogBuffer;
+use crate::state::{AppState, RunningProc};
 use std::io::{BufRead, BufReader, Read};
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, Signal, System};
 use tauri::{AppHandle, Manager, State};
@@ -299,6 +298,7 @@ const START_GRACE: Duration = Duration::from_secs(2);
 const START_PORT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 启动项目并等待结果，让界面能明确告知 成功 / 失败 / 失败原因。
+#[cfg(test)]
 pub fn start_and_verify(id: &str, state: &AppState) -> Result<StartOutcome, String> {
     start_and_verify_with(id, state, START_GRACE, START_PORT_TIMEOUT)
 }
@@ -455,27 +455,28 @@ fn is_noise(line: &str) -> bool {
 }
 
 /// 取本次启动以来最后 n 行 stdout / stderr 输出（不含系统消息），单行过长会截断
-pub(crate) fn tail_since_start(buf: &Arc<Mutex<VecDeque<LogLine>>>, n: usize) -> Vec<String> {
-    let b = buf.lock().unwrap();
-    let mut lines: Vec<String> = Vec::new();
-    for l in b.iter().rev() {
-        if l.stream == "system" {
-            if l.text.starts_with("▶ ") {
+pub(crate) fn tail_since_start(buf: &LogBuffer, n: usize) -> Vec<String> {
+    buf.with_lines(|b| {
+        let mut lines: Vec<String> = Vec::new();
+        for l in b.iter().rev() {
+            if l.stream == "system" {
+                if l.text.starts_with("▶ ") {
+                    break;
+                }
+                continue;
+            }
+            if is_noise(&l.text) {
+                continue;
+            }
+            let t: String = l.text.chars().take(200).collect();
+            lines.push(t);
+            if lines.len() >= n {
                 break;
             }
-            continue;
         }
-        if is_noise(&l.text) {
-            continue;
-        }
-        let t: String = l.text.chars().take(200).collect();
-        lines.push(t);
-        if lines.len() >= n {
-            break;
-        }
-    }
-    lines.reverse();
-    lines
+        lines.reverse();
+        lines
+    })
 }
 
 pub fn stop_project_inner(id: &str, state: &AppState) -> Result<(), String> {
@@ -655,7 +656,7 @@ fn port_is_listening(port: u16) -> bool {
 pub(crate) fn spawn_reader<R: Read + Send + 'static>(
     r: R,
     stream: &'static str,
-    buf: Arc<Mutex<VecDeque<LogLine>>>,
+    buf: LogBuffer,
 ) {
     std::thread::spawn(move || {
         let reader = BufReader::new(r);
@@ -668,16 +669,8 @@ pub(crate) fn spawn_reader<R: Read + Send + 'static>(
     });
 }
 
-pub(crate) fn push_log(buf: &Arc<Mutex<VecDeque<LogLine>>>, stream: &str, text: String) {
-    let mut b = buf.lock().unwrap();
-    if b.len() >= MAX_LOG_LINES {
-        b.pop_front();
-    }
-    b.push_back(LogLine {
-        ts: chrono::Local::now().format("%H:%M:%S").to_string(),
-        stream: stream.to_string(),
-        text,
-    });
+pub(crate) fn push_log(buf: &LogBuffer, stream: &str, text: String) {
+    buf.push(stream, text);
 }
 
 fn push_system_log(state: &AppState, id: &str, text: &str) {
@@ -724,7 +717,7 @@ mod tests {
         }));
         let out = start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(3)).unwrap();
         assert_eq!(out.level, "success", "{}", out.message);
-        let logs: Vec<String> = st.log_buffer("t").lock().unwrap().iter().map(|l| l.text.clone()).collect();
+        let logs: Vec<String> = st.log_buffer("t").snapshot().into_iter().map(|l| l.text).collect();
         let all = logs.join("\n");
         assert!(all.contains("项目用的是-node-18.19.1"), "{all}");
         assert!(all.contains(&format!("项目用的是-java-home={}", d.join("jdk17").display())), "{all}");

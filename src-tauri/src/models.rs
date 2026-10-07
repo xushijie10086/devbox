@@ -194,6 +194,8 @@ pub struct ServiceInfo {
 /// 单行日志
 #[derive(Serialize, Clone, Debug)]
 pub struct LogLine {
+    /// 单调递增的序号（每个项目内），前端据此只拉取新增的行
+    pub seq: u64,
     pub ts: String,
     /// "stdout" | "stderr" | "system"
     pub stream: String,

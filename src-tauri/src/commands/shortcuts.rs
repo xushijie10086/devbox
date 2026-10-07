@@ -35,11 +35,14 @@ pub fn open_terminal(path: String) -> Result<(), String> {
         .map_err(|e| format!("打开终端失败: {e}"))
 }
 
-/// 在访达中显示目录
+/// 在访达中显示：目录就打开它；文件则定位并选中该文件（open -R），而不是用默认应用把它打开
 #[tauri::command]
 pub fn reveal_in_finder(path: String) -> Result<(), String> {
-    Command::new("open")
-        .arg(&path)
+    let mut cmd = Command::new("open");
+    if std::path::Path::new(&path).is_file() {
+        cmd.arg("-R");
+    }
+    cmd.arg(&path)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("打开访达失败: {e}"))

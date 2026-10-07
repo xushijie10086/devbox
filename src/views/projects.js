@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { el, toast, guard, fmtUptime, confirmDialog, choiceDialog, summarizeStart, summarizePull } from "../ui.js";
 import { icon } from "../icons.js";
+import { createLogView } from "../logview.js";
 
 // 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
 const TAB_ALL = "__all__";
@@ -917,37 +918,13 @@ export function mount(root) {
 
   // 单独查看某个项目的实时日志
   function openLogModal(p) {
-    const body = el("pre", { class: "term-log" }, "加载日志中…");
-    let alive = true;
-    let interval = null;
-
-    async function pull() {
-      try {
-        const lines = await api.getLogs(p.id);
-        if (!alive) return;
-        if (!lines || lines.length === 0) {
-          body.textContent = "暂无日志输出";
-          return;
-        }
-        const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
-        body.innerHTML = "";
-        for (const l of lines) {
-          const line = el("div", { class: `log-line ${l.stream}` }, [
-            el("span", { class: "log-ts" }, l.ts),
-            el("span", { class: "log-text" }, l.text),
-          ]);
-          body.append(line);
-        }
-        if (atBottom) body.scrollTop = body.scrollHeight;
-      } catch (_) {}
-    }
-
-    showTermModal(`日志 · ${p.name}`, body, () => {
-      alive = false;
-      if (interval) clearInterval(interval);
+    const view = createLogView({
+      fetchChunk: (after, epoch) => api.getLogs(p.id, after, epoch),
+      onClear: () => api.clearLogs(p.id),
+      onRevealFile: async () => guard(api.revealInFinder(await api.logFilePath(p.id))),
     });
-    pull();
-    interval = setInterval(pull, 1000);
+    showTermModal(`日志 · ${p.name}`, view.root, () => view.stop());
+    view.start();
   }
 
   async function openEditor(p) {

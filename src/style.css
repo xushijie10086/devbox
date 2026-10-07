@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark; /* 原生控件（下拉框、滚动条、复选框）也用深色，不再露出白底 */
   --bg: #0f1115;
   --panel: #171a21;
   --panel-2: #1e222b;
@@ -151,12 +152,6 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .raw { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: "SF Mono", monospace; font-size: 12px; color: var(--dim); max-height: 240px; overflow: auto; white-space: pre-wrap; }
 
 /* 日志终端 */
-.terminal { background: #0a0c10; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; font-family: "SF Mono", ui-monospace, monospace; font-size: 12.5px; height: calc(100vh - 130px); overflow-y: auto; }
-.log-line { display: flex; gap: 10px; padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
-.log-ts { color: #556; flex-shrink: 0; }
-.log-line.stderr .log-text { color: #ff9a9a; }
-.log-line.system .log-text { color: var(--accent); }
-.log-line.stdout .log-text { color: #d7dbe3; }
 .scroll-toggle { display: flex; align-items: center; gap: 5px; color: var(--dim); font-size: 12px; }
 
 /* 表单 / 模态 */
@@ -210,16 +205,6 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 
 /* 单项目日志模态 */
 .term-modal .modal-body { padding: 0; }
-.term-log {
-  margin: 0; background: #0a0c10; padding: 12px;
-  font-family: "SF Mono", ui-monospace, monospace; font-size: 12.5px;
-  height: 60vh; overflow-y: auto; white-space: pre-wrap;
-}
-.term-log .log-line { display: flex; gap: 10px; padding: 1px 0; word-break: break-all; }
-.term-log .log-ts { color: #556; flex-shrink: 0; }
-.term-log .log-line.stderr .log-text { color: #ff9a9a; }
-.term-log .log-line.system .log-text { color: var(--accent); }
-.term-log .log-line.stdout .log-text { color: #d7dbe3; }
 
 /* 应用内确认弹窗 */
 .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 300; }
@@ -375,3 +360,29 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .dep-chip { font-size: 10.5px; color: var(--dim); padding: 0 2px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dep-list { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #0b0d11; }
 .dep-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+
+/* ---- 日志查看器（项目日志弹窗 / 日志页共用） ---- */
+.term-modal { width: min(980px, 94vw); }
+.term-modal .modal-body { padding: 12px 14px; }
+.logview { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.logview-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.logview-bar .search { flex: 1 1 200px; min-width: 160px; }
+.lv-count { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.logview-body {
+  background: #0a0c10; border: 1px solid var(--border); border-radius: 8px; padding: 8px 6px;
+  font-family: "SF Mono", ui-monospace, monospace; font-size: 12.5px; line-height: 1.5;
+  height: var(--lv-height, 52vh); overflow: auto;
+}
+.logview .log-line { display: flex; gap: 10px; padding: 1px 6px; border-radius: 3px; white-space: pre-wrap; word-break: break-all; }
+.logview .log-ts { color: #556; flex-shrink: 0; user-select: none; }
+.logview .log-text { flex: 1; min-width: 0; color: #d7dbe3; }
+.logview .log-line.stderr .log-text { color: #ffb3b3; }
+.logview .log-line.system .log-text { color: var(--accent); }
+.logview .log-line.lvl-error { background: rgba(239,91,107,.13); box-shadow: inset 2px 0 0 var(--red); }
+.logview .log-line.lvl-warn { background: rgba(240,180,41,.10); box-shadow: inset 2px 0 0 var(--amber); }
+.logview .log-line.lvl-error .log-text { color: #ff8f9b; }
+.logview .log-line.lvl-warn .log-text { color: #ffd479; }
+.logview .log-line.stack .log-text { opacity: .6; }
+.logview mark { background: rgba(255,214,102,.38); color: inherit; border-radius: 2px; padding: 0 1px; }
+.logview .empty { padding: 28px; }
+.logs-page .logview-body { height: calc(100vh - 250px); min-height: 240px; }

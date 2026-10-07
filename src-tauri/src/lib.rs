@@ -1,5 +1,6 @@
 mod commands;
 mod http_api;
+mod logstore;
 mod models;
 mod notify;
 mod state;
@@ -89,6 +90,7 @@ pub fn run() {
             // logs
             commands::logs::get_logs,
             commands::logs::clear_logs,
+            commands::logs::log_file_path,
             // shortcuts
             commands::shortcuts::open_in_editor,
             commands::shortcuts::open_url,
