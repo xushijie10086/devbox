@@ -1,12 +1,11 @@
 import * as projects from "./views/projects.js";
-import * as profiles from "./views/profiles.js";
 import * as ports from "./views/ports.js";
 import * as services from "./views/services.js";
 import * as hosts from "./views/hosts.js";
 import * as logs from "./views/logs.js";
 import { icon } from "./icons.js";
 
-const views = { projects, profiles, ports, services, hosts, logs };
+const views = { projects, ports, services, hosts, logs };
 
 const viewRoot = document.getElementById("view-root");
 const nav = document.getElementById("nav");

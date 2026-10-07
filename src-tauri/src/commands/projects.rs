@@ -403,7 +403,6 @@ mod group_tests {
     fn cfg() -> Config {
         Config {
             projects: vec![project("a", Some("后端")), project("b", Some("后端")), project("c", None)],
-            profiles: vec![],
             project_groups: vec!["后端".into(), "前端".into()],
         }
     }
@@ -460,9 +459,9 @@ mod group_tests {
     }
 
     #[test]
-    fn old_config_without_groups_still_loads() {
+    fn old_config_loads_and_ignores_removed_profiles() {
         let c: Config = serde_json::from_str(
-            r#"{"projects":[{"id":"x","name":"x","path":"/","start_command":"y"}],"profiles":[]}"#,
+            r#"{"projects":[{"id":"x","name":"x","path":"/","start_command":"y"}],"profiles":[{"id":"p","name":"旧启动组"}]}"#,
         )
         .unwrap();
         assert!(c.project_groups.is_empty());

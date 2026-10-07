@@ -40,25 +40,11 @@ fn default_kind() -> String {
     "other".to_string()
 }
 
-/// 启动组：一键拉起一批项目 + 一批 brew 服务
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Profile {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub project_ids: Vec<String>,
-    /// 需要一起启动的 brew 服务名，例如 ["mysql", "redis"]
-    #[serde(default)]
-    pub service_names: Vec<String>,
-}
-
 /// 持久化到磁盘的配置
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Config {
     #[serde(default)]
     pub projects: Vec<Project>,
-    #[serde(default)]
-    pub profiles: Vec<Profile>,
     /// 项目组列表（决定 tab 的顺序，也允许存在暂时没有项目的空组）
     #[serde(default)]
     pub project_groups: Vec<String>,

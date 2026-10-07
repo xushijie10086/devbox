@@ -52,12 +52,6 @@ pub fn run() {
             // logs
             commands::logs::get_logs,
             commands::logs::clear_logs,
-            // profiles
-            commands::profiles::list_profiles,
-            commands::profiles::save_profile,
-            commands::profiles::delete_profile,
-            commands::profiles::start_profile,
-            commands::profiles::stop_profile,
             // shortcuts
             commands::shortcuts::open_in_editor,
             commands::shortcuts::open_url,

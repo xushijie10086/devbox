@@ -631,7 +631,7 @@ function kindLabel(k) {
 }
 
 // 简易模态框
-export function showModal(title, body, onOk) {
+function showModal(title, body, onOk) {
   const overlay = el("div", { class: "modal-overlay" });
   const okBtn = el("button", { class: "primary-btn" }, "保存");
   const cancelBtn = el("button", { class: "ghost-btn" }, "取消");

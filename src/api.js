@@ -41,12 +41,6 @@ export const api = {
   getLogs: (projectId) => invoke("get_logs", { projectId }),
   clearLogs: (projectId) => invoke("clear_logs", { projectId }),
 
-  // 启动组
-  listProfiles: () => invoke("list_profiles"),
-  saveProfile: (profile) => invoke("save_profile", { profile }),
-  deleteProfile: (id) => invoke("delete_profile", { id }),
-  startProfile: (id) => invoke("start_profile", { id }),
-  stopProfile: (id) => invoke("stop_profile", { id }),
 
   // 快捷入口
   openInEditor: (path, editor) => invoke("open_in_editor", { path, editor }),

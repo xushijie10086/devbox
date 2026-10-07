@@ -457,7 +457,7 @@ mod tests {
     fn state_with(project: serde_json::Value) -> AppState {
         let p: Project = serde_json::from_value(project).unwrap();
         AppState {
-            config: Mutex::new(Config { projects: vec![p], profiles: vec![], project_groups: vec![] }),
+            config: Mutex::new(Config { projects: vec![p], project_groups: vec![] }),
             config_path: std::env::temp_dir().join("devbox-test-config.json"),
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
