@@ -38,6 +38,10 @@ pub fn run() {
             commands::process::health_tick,
             // git / 运行时版本
             commands::git::git_pull,
+            commands::git::git_branches,
+            commands::git::git_checkout,
+            commands::git::git_fetch,
+            commands::git::project_branches,
             commands::runtime::list_runtimes,
             // ports
             commands::ports::list_ports,

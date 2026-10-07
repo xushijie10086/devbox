@@ -24,6 +24,7 @@ export function mount(root) {
   let drag = null; // 拖拽上下文，见 startDrag
   const starting = new Set(); // 正在等待启动结果的项目 id
   const pulling = new Set(); // 正在拉取代码的项目 id
+  let branches = {}; // 项目 id -> { name, detached }，只含 git 项目
 
   const tabsEl = el("div", { class: "tabs" });
   const groupTools = el("div", { class: "group-tools" });
@@ -315,6 +316,7 @@ export function mount(root) {
 
   async function refresh() {
     [projects, groups] = await Promise.all([api.listProjects(), api.listProjectGroups()]);
+    await refreshBranches();
     try {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
@@ -323,6 +325,14 @@ export function mount(root) {
     }
     renderTabs();
     render();
+  }
+
+  async function refreshBranches() {
+    try {
+      branches = await api.projectBranches();
+    } catch (_) {
+      branches = {};
+    }
   }
 
   function render() {
@@ -349,9 +359,13 @@ export function mount(root) {
     // 「全部」tab 里额外标出所属分组，方便辨认
     const groupBadge = activeTab === TAB_ALL && p.group ? el("span", { class: "badge badge-group", title: "所属项目组" }, `# ${p.group}`) : null;
 
+    // 第三行标签：当前分支 + Node / JDK 版本，都可点击切换
+    const chips = [branchChip(p), ...runtimeChips(p)].filter(Boolean);
+
     const nameCell = el("div", { class: "name-cell" }, [
       el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
-      el("div", { class: "sub-line" }, [groupBadge, ...runtimeChips(p), el("span", { class: "row-path", title: p.path }, p.path)]),
+      el("div", { class: "sub-line" }, [groupBadge, el("span", { class: "row-path", title: p.path }, p.path)]),
+      chips.length ? el("div", { class: "chip-line" }, chips) : null,
     ]);
 
     const cmdCell = el("div", { class: "cmd-cell", title: p.start_command }, [
@@ -422,6 +436,116 @@ export function mount(root) {
       pulling.delete(p.id);
       render();
     }
+  }
+
+  // 当前分支标签（非 git 项目不显示）。点击打开分支切换
+  function branchChip(p) {
+    const b = branches[p.id];
+    if (!b) return null;
+    const chip = el("button", {
+      class: `rt-chip br-chip${b.detached ? " detached" : ""}`,
+      title: b.detached ? `游离 HEAD（${b.name}），点击切换到某个分支` : `当前分支 ${b.name}（点击切换分支）`,
+      onclick: () => openBranchDialog(p),
+    });
+    chip.append(icon("branch", 11), el("span", {}, b.detached ? `游离 ${b.name}` : b.name));
+    return chip;
+  }
+
+  // 切换分支：列出本地 + 仅远程存在的分支，可搜索、可先获取远程最新分支
+  async function openBranchDialog(p) {
+    let data;
+    try {
+      data = await api.gitBranches(p.id);
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+      return;
+    }
+    let selected = null; // { name, kind }
+    const search = el("input", { type: "text", placeholder: "搜索分支…" });
+    const list = el("div", { class: "br-list" });
+    const head = el("div", { class: "br-head" });
+    const fetchBtn = el("button", { class: "ghost-btn sm", type: "button", title: "git fetch --prune：取回远程最新的分支信息" }, "↻ 获取远程分支");
+
+    const renderHead = () => {
+      head.innerHTML = "";
+      const cur = data.current;
+      head.append(
+        el("span", {}, cur ? (cur.detached ? `当前：游离 HEAD（${cur.name}）` : `当前：${cur.name}`) : "当前：未知"),
+        data.dirty > 0
+          ? el("span", { class: "br-warn" }, `有 ${data.dirty} 个文件未提交；若与目标分支冲突，切换会被拒绝（不会丢失修改）`)
+          : null,
+      );
+    };
+
+    const renderList = () => {
+      list.innerHTML = "";
+      const q = search.value.trim().toLowerCase();
+      const rows = data.branches.filter((b) => !q || b.name.toLowerCase().includes(q));
+      if (rows.length === 0) {
+        list.append(el("div", { class: "empty" }, data.branches.length ? "没有匹配的分支" : "没有分支"));
+        return;
+      }
+      for (const b of rows) {
+        const isSel = selected && selected.name === b.name && selected.kind === b.kind;
+        const item = el("div", {
+          class: `br-item${b.current ? " current" : ""}${isSel ? " selected" : ""}`,
+          onclick: () => {
+            if (b.current) return;
+            selected = { name: b.name, kind: b.kind };
+            renderList();
+          },
+        }, [
+          el("div", { class: "br-main" }, [
+            el("span", { class: "br-name" }, b.name),
+            b.current ? el("span", { class: "br-tag cur" }, "当前") : el("span", { class: `br-tag ${b.kind}` }, b.kind === "remote" ? "远程" : "本地"),
+          ]),
+          el("div", { class: "br-sub" }, `${b.hash} · ${b.date} · ${b.subject}`),
+        ]);
+        list.append(item);
+      }
+    };
+
+    fetchBtn.onclick = async () => {
+      fetchBtn.disabled = true;
+      fetchBtn.textContent = "获取中…";
+      try {
+        await api.gitFetch(p.id);
+        data = await api.gitBranches(p.id);
+        renderHead();
+        renderList();
+        toast("已获取远程最新分支", "success");
+      } catch (e) {
+        toast(String(e), "error");
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.textContent = "↻ 获取远程分支";
+      }
+    };
+    search.addEventListener("input", renderList);
+    renderHead();
+    renderList();
+
+    const body = el("div", { class: "form" }, [
+      el("div", { class: "br-top" }, [head, fetchBtn]),
+      search,
+      list,
+    ]);
+    showModal(`切换分支 · ${p.name}`, body, async () => {
+      if (!selected) {
+        toast("请先点选要切换到的分支", "error");
+        return false;
+      }
+      try {
+        const out = await api.gitCheckout(p.id, selected.name, selected.kind);
+        toast(`${p.name}：${out.message}`, out.message.includes("重启") ? "warning" : "success");
+      } catch (e) {
+        toast(`${p.name}：${String(e)}`, "error");
+        return false;
+      }
+      await refresh();
+      return true;
+    }, "切换");
+    setTimeout(() => search.focus(), 0);
   }
 
   // 运行时版本标签：前端项目显示 Node、后端项目显示 JDK；「其它」类型只在设置过时显示。点击可切换。
@@ -736,6 +860,7 @@ export function mount(root) {
     try {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
+      await refreshBranches(); // 在终端里切了分支，这里也能跟上
       render();
       renderGroupTools(); // 批量按钮的可用状态随运行状态变化
       await api.healthTick();
@@ -753,9 +878,9 @@ function kindLabel(k) {
 }
 
 // 简易模态框
-function showModal(title, body, onOk) {
+function showModal(title, body, onOk, okText = "保存") {
   const overlay = el("div", { class: "modal-overlay" });
-  const okBtn = el("button", { class: "primary-btn" }, "保存");
+  const okBtn = el("button", { class: "primary-btn" }, okText);
   const cancelBtn = el("button", { class: "ghost-btn" }, "取消");
   const modal = el("div", { class: "modal" }, [
     el("div", { class: "modal-header" }, title),

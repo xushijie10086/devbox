@@ -4,9 +4,12 @@
 //! 而是明确告诉用户需要手动处理。
 
 use crate::commands::process::kill_tree;
-use crate::models::StartOutcome;
+use crate::models::{Project, StartOutcome};
 use crate::state::AppState;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::State;
@@ -113,7 +116,7 @@ fn pull_in(path: &str, project_running: bool) -> Result<StartOutcome, String> {
         Err(e) => return Err(e),
     };
     if !pull.ok {
-        return Err(explain_failure(&pull.stderr, &pull.stdout));
+        return Err(explain_failure("拉取", &pull.stderr, &pull.stdout));
     }
 
     let after = q(&["rev-parse", "HEAD"])?.stdout;
@@ -134,15 +137,21 @@ fn pull_in(path: &str, project_running: bool) -> Result<StartOutcome, String> {
 }
 
 /// 把 git 的英文报错翻译成原因 + 处理建议，并附上原始输出的最后几行
-fn explain_failure(stderr: &str, stdout: &str) -> String {
+fn explain_failure(action: &str, stderr: &str, stdout: &str) -> String {
     let raw = if stderr.is_empty() { stdout } else { stderr };
     let lower = raw.to_lowercase();
-    let hint = if lower.contains("not possible to fast-forward") || lower.contains("diverging branches") {
+    let hint = if lower.contains("pathspec") && lower.contains("did not match") {
+        "分支不存在（可能已被删除，可先「获取远程分支」刷新列表）"
+    } else if lower.contains("already exists") {
+        "同名分支已存在"
+    } else if lower.contains("not possible to fast-forward") || lower.contains("diverging branches") {
         "本地分支与远程已分叉，不能快进；需要在终端手动 merge 或 rebase"
     } else if lower.contains("no tracking information") || lower.contains("no upstream") {
         "当前分支没有设置上游分支（git branch --set-upstream-to）"
-    } else if lower.contains("would be overwritten") || lower.contains("local changes") {
-        "本地有未提交的修改会被覆盖；请先提交或 stash"
+    } else if lower.contains("would be overwritten") || lower.contains("local changes")
+        || lower.contains("unmerged") || lower.contains("needs merge")
+    {
+        "本地有未提交的修改会被覆盖（或存在未解决的冲突）；请先提交或 stash"
     } else if lower.contains("could not resolve host") || lower.contains("unable to access")
         || lower.contains("connection") || lower.contains("timed out")
     {
@@ -152,11 +161,241 @@ fn explain_failure(stderr: &str, stdout: &str) -> String {
     {
         "认证失败；请先在终端配置好凭据或 SSH key（这里不会弹出口令输入）"
     } else {
-        "git pull 失败"
+        "git 执行失败"
     };
     let tail: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).rev().take(5).collect();
     let tail: Vec<&str> = tail.into_iter().rev().collect();
-    format!("拉取失败：{hint}\n{}", tail.join("\n"))
+    format!("{action}失败：{hint}\n{}", tail.join("\n"))
+}
+
+
+// ---------- 分支 ----------
+
+/// 项目当前所在分支；detached 时 name 是短哈希
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct BranchInfo {
+    pub name: String,
+    pub detached: bool,
+}
+
+/// 从工作目录向上找 .git（项目可能是 monorepo 的子目录），返回 git 目录
+fn find_git_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let dot = d.join(".git");
+        if dot.is_dir() {
+            return Some(dot);
+        }
+        // worktree / submodule：.git 是一个指向真实 git 目录的文件
+        if dot.is_file() {
+            let text = std::fs::read_to_string(&dot).ok()?;
+            let target = text.trim().strip_prefix("gitdir:")?.trim();
+            let p = PathBuf::from(target);
+            return Some(if p.is_absolute() { p } else { d.join(p) });
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// 直接读 HEAD 文件得到当前分支，不启动任何进程，所以能放心地频繁调用
+pub fn current_branch(path: &str) -> Option<BranchInfo> {
+    let git_dir = find_git_dir(Path::new(path))?;
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(name) => Some(BranchInfo { name: name.to_string(), detached: false }),
+        None if head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()) => {
+            Some(BranchInfo { name: head[..7].to_string(), detached: true })
+        }
+        None => None,
+    }
+}
+
+/// 所有项目的当前分支（id -> 分支）；非 git 项目不出现
+#[tauri::command]
+pub fn project_branches(state: State<AppState>) -> HashMap<String, BranchInfo> {
+    let projects: Vec<Project> = state.config.lock().unwrap().projects.clone();
+    projects
+        .iter()
+        .filter_map(|p| current_branch(&p.path).map(|b| (p.id.clone(), b)))
+        .collect()
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct BranchEntry {
+    /// 本地分支名，或 "origin/feature-x" 这样的远程分支名
+    pub name: String,
+    /// "local" | "remote"
+    pub kind: &'static str,
+    pub current: bool,
+    pub hash: String,
+    /// 最近提交的相对时间，如 "3 days ago"
+    pub date: String,
+    pub subject: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct BranchList {
+    pub current: Option<BranchInfo>,
+    /// 有未提交修改的文件数（不含未跟踪文件）
+    pub dirty: usize,
+    pub branches: Vec<BranchEntry>,
+}
+
+fn project_of(state: &AppState, id: &str) -> Result<Project, String> {
+    state
+        .config
+        .lock()
+        .unwrap()
+        .projects
+        .iter()
+        .find(|p| p.id == id)
+        .cloned()
+        .ok_or_else(|| "找不到项目".to_string())
+}
+
+fn ensure_repo(path: &str) -> Result<(), String> {
+    if !Path::new(path).is_dir() {
+        return Err(format!("工作目录不存在或不是目录：{path}"));
+    }
+    if !run_git(path, &["rev-parse", "--is-inside-work-tree"], QUERY_TIMEOUT)?.ok {
+        return Err("该目录不是 git 仓库".into());
+    }
+    Ok(())
+}
+
+/// 列出可切换的分支：本地分支在前（当前分支置顶），然后是「只存在于远程」的分支
+#[tauri::command(async)]
+pub fn git_branches(id: String, state: State<AppState>) -> Result<BranchList, String> {
+    let project = project_of(&state, &id)?;
+    list_branches(&project.path)
+}
+
+fn list_branches(path: &str) -> Result<BranchList, String> {
+    ensure_repo(path)?;
+    // 字段用 0x1f 分隔，避免提交信息里的空格、制表符干扰
+    let fmt = "%(refname)%1f%(HEAD)%1f%(objectname:short)%1f%(committerdate:relative)%1f%(contents:subject)";
+    let out = run_git(
+        path,
+        &["for-each-ref", "--sort=-committerdate", &format!("--format={fmt}"), "refs/heads", "refs/remotes"],
+        QUERY_TIMEOUT,
+    )?;
+    if !out.ok {
+        return Err(explain_failure("读取分支", &out.stderr, &out.stdout));
+    }
+    let dirty = run_git(path, &["status", "--porcelain", "--untracked-files=no"], QUERY_TIMEOUT)?
+        .stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    Ok(BranchList {
+        current: current_branch(path),
+        dirty,
+        branches: parse_branches(&out.stdout),
+    })
+}
+
+/// 解析 for-each-ref 的输出：本地在前，远程只保留没有同名本地分支的，并去掉 origin/HEAD
+fn parse_branches(text: &str) -> Vec<BranchEntry> {
+    let mut locals: Vec<BranchEntry> = Vec::new();
+    let mut remotes: Vec<BranchEntry> = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\u{1f}').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let entry = |name: &str, kind: &'static str| BranchEntry {
+            name: name.to_string(),
+            kind,
+            current: f[1].trim() == "*",
+            hash: f[2].to_string(),
+            date: f[3].to_string(),
+            subject: f[4].to_string(),
+        };
+        if let Some(name) = f[0].strip_prefix("refs/heads/") {
+            locals.push(entry(name, "local"));
+        } else if let Some(name) = f[0].strip_prefix("refs/remotes/") {
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            remotes.push(entry(name, "remote"));
+        }
+    }
+    // 当前分支置顶，其余保持「最近提交在前」
+    locals.sort_by_key(|b| !b.current);
+    remotes.retain(|r| {
+        let short = r.name.split_once('/').map(|(_, rest)| rest).unwrap_or(&r.name);
+        !locals.iter().any(|l| l.name == short)
+    });
+    locals.extend(remotes);
+    locals
+}
+
+/// 切换到指定分支。kind 为 "remote" 时（如 origin/feature-x）：
+/// 若本地已有同名分支就直接切过去，否则新建一个跟踪它的本地分支。
+#[tauri::command(async)]
+pub fn git_checkout(id: String, name: String, kind: String, state: State<AppState>) -> Result<StartOutcome, String> {
+    let project = project_of(&state, &id)?;
+    let running = state.procs.lock().unwrap().contains_key(&id);
+    checkout_in(&project.path, &name, &kind, running)
+}
+
+fn checkout_in(path: &str, name: &str, kind: &str, project_running: bool) -> Result<StartOutcome, String> {
+    ensure_repo(path)?;
+    if name.is_empty() || name.starts_with('-') || name.contains("..") || name.chars().any(|c| c.is_control() || c == ' ') {
+        return Err(format!("非法的分支名：{name}"));
+    }
+    let exists = |full_ref: &str| {
+        run_git(path, &["rev-parse", "--verify", "--quiet", full_ref], QUERY_TIMEOUT).map(|o| o.ok)
+    };
+
+    let (args, done): (Vec<String>, String) = if kind == "remote" {
+        let (_, local) = name.split_once('/').ok_or_else(|| format!("非法的远程分支名：{name}"))?;
+        if !exists(&format!("refs/remotes/{name}"))? {
+            return Err(format!("远程分支 {name} 不存在，请先「获取远程分支」刷新列表"));
+        }
+        if exists(&format!("refs/heads/{local}"))? {
+            (vec!["checkout".into(), local.into(), "--".into()], format!("已切换到本地分支 {local}"))
+        } else {
+            (
+                vec!["checkout".into(), "-b".into(), local.into(), "--track".into(), name.into()],
+                format!("已创建并切换到 {local}（跟踪 {name}）"),
+            )
+        }
+    } else {
+        if !exists(&format!("refs/heads/{name}"))? {
+            return Err(format!("本地分支 {name} 不存在"));
+        }
+        (vec!["checkout".into(), name.into(), "--".into()], format!("已切换到分支 {name}"))
+    };
+
+    let argv: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = run_git(path, &argv, PULL_TIMEOUT)?;
+    if !out.ok {
+        return Err(explain_failure("切换分支", &out.stderr, &out.stdout));
+    }
+    let mut msg = done;
+    if project_running {
+        msg.push_str("\n项目正在运行，代码已变化，可能需要点「重启」才会生效");
+    }
+    Ok(StartOutcome::success(msg))
+}
+
+/// 获取远程最新的分支信息（git fetch --prune），让列表里能看到新分支
+#[tauri::command(async)]
+pub fn git_fetch(id: String, state: State<AppState>) -> Result<StartOutcome, String> {
+    let project = project_of(&state, &id)?;
+    ensure_repo(&project.path)?;
+    let out = match run_git(&project.path, &["fetch", "--prune"], PULL_TIMEOUT) {
+        Ok(o) => o,
+        Err(e) if e.contains("已中止") => return Err("获取超时（120 秒），已中止；请检查网络".into()),
+        Err(e) => return Err(e),
+    };
+    if !out.ok {
+        return Err(explain_failure("获取远程分支", &out.stderr, &out.stdout));
+    }
+    Ok(StartOutcome::success("已获取远程最新分支".into()))
 }
 
 #[cfg(test)]
@@ -257,9 +496,133 @@ mod tests {
 
     #[test]
     fn explains_common_failures() {
-        assert!(explain_failure("fatal: unable to access 'https://x': Could not resolve host: x", "").contains("网络"));
-        assert!(explain_failure("Permission denied (publickey).", "").contains("认证"));
-        assert!(explain_failure("There is no tracking information for the current branch.", "").contains("上游分支"));
-        assert!(explain_failure("weird", "").contains("git pull 失败"));
+        assert!(explain_failure("拉取", "fatal: unable to access 'https://x': Could not resolve host: x", "").contains("网络"));
+        assert!(explain_failure("拉取", "Permission denied (publickey).", "").contains("认证"));
+        assert!(explain_failure("拉取", "There is no tracking information for the current branch.", "").contains("上游分支"));
+        assert!(explain_failure("拉取", "weird", "").contains("git 执行失败"));
+    }
+
+    // ---------- 分支 ----------
+
+    fn branch_of(dir: &Path) -> String {
+        current_branch(dir.to_str().unwrap()).map(|b| b.name).unwrap_or_default()
+    }
+
+    #[test]
+    fn current_branch_reads_head_without_git() {
+        let (a, _b, _o) = setup("curbranch");
+        assert_eq!(branch_of(&a), "main");
+        git(&a, &["checkout", "-q", "-b", "feature/x"]);
+        assert_eq!(branch_of(&a), "feature/x", "带斜杠的分支名也要完整");
+        // 子目录（monorepo）也能向上找到 .git
+        std::fs::create_dir_all(a.join("web/app")).unwrap();
+        assert_eq!(branch_of(&a.join("web/app")), "feature/x");
+        // detached：返回短哈希并标记
+        let sha = run_git(a.to_str().unwrap(), &["rev-parse", "HEAD"], QUERY_TIMEOUT).unwrap().stdout;
+        git(&a, &["checkout", "-q", "--detach", &sha]);
+        let b = current_branch(a.to_str().unwrap()).unwrap();
+        assert!(b.detached && b.name == sha[..7], "{b:?}");
+        // 非 git 目录
+        let plain = std::env::temp_dir().join(format!("devbox-nogit-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(current_branch(plain.to_str().unwrap()).is_none(), "非 git 目录不应有分支");
+    }
+
+    #[test]
+    fn worktree_style_git_file_is_followed() {
+        let (a, _b, _o) = setup("wt");
+        let wt = a.parent().unwrap().join("wt-dir");
+        git(&a, &["worktree", "add", "-q", "-b", "wt-branch", wt.to_str().unwrap()]);
+        assert!(wt.join(".git").is_file());
+        assert_eq!(branch_of(&wt), "wt-branch");
+    }
+
+    #[test]
+    fn lists_local_then_remote_only_branches() {
+        let (a, b, _o) = setup("list");
+        git(&a, &["branch", "dev"]);
+        // 远程新增 release 分支；a 还没 fetch，所以先看不到
+        git(&b, &["checkout", "-q", "-b", "release"]);
+        git(&b, &["push", "-q", "-u", "origin", "release"]);
+        let before = list_branches(a.to_str().unwrap()).unwrap();
+        assert!(!before.branches.iter().any(|x| x.name == "origin/release"));
+
+        git(&a, &["fetch", "-q"]);
+        let l = list_branches(a.to_str().unwrap()).unwrap();
+        let names: Vec<_> = l.branches.iter().map(|x| (x.name.as_str(), x.kind, x.current)).collect();
+        assert_eq!(names[0], ("main", "local", true), "当前分支置顶: {names:?}");
+        assert!(names.contains(&("dev", "local", false)));
+        assert!(names.contains(&("origin/release", "remote", false)));
+        assert!(!names.iter().any(|(n, _, _)| *n == "origin/main"), "已有同名本地分支的远程不重复列出");
+        assert!(!names.iter().any(|(n, _, _)| n.ends_with("/HEAD")), "不列 origin/HEAD");
+        assert_eq!(l.dirty, 0);
+        assert!(!l.branches[0].subject.is_empty() && !l.branches[0].hash.is_empty());
+    }
+
+    #[test]
+    fn checkout_local_and_remote_tracking() {
+        let (a, b, _o) = setup("checkout");
+        git(&a, &["branch", "dev"]);
+        let out = checkout_in(a.to_str().unwrap(), "dev", "local", false).unwrap();
+        assert!(out.message.contains("已切换到分支 dev"), "{}", out.message);
+        assert_eq!(branch_of(&a), "dev");
+
+        // 远程独有分支：新建跟踪分支
+        git(&b, &["checkout", "-q", "-b", "feature/y"]);
+        std::fs::write(b.join("y.txt"), "y").unwrap();
+        git(&b, &["add", "."]);
+        git(&b, &["commit", "-q", "-m", "y"]);
+        git(&b, &["push", "-q", "-u", "origin", "feature/y"]);
+        git(&a, &["fetch", "-q"]);
+        let out = checkout_in(a.to_str().unwrap(), "origin/feature/y", "remote", true).unwrap();
+        assert!(out.message.contains("已创建并切换到 feature/y（跟踪 origin/feature/y）"), "{}", out.message);
+        assert!(out.message.contains("重启"), "运行中要提示重启");
+        assert_eq!(branch_of(&a), "feature/y");
+        assert!(a.join("y.txt").exists(), "工作区内容随分支变化");
+
+        // 再选同一个远程分支：本地已有，直接切过去而不是报错
+        git(&a, &["checkout", "-q", "main"]);
+        let out = checkout_in(a.to_str().unwrap(), "origin/feature/y", "remote", false).unwrap();
+        assert!(out.message.contains("已切换到本地分支 feature/y"), "{}", out.message);
+    }
+
+    #[test]
+    fn checkout_blocked_by_local_changes_is_explained_and_safe() {
+        let (a, _b, _o) = setup("blocked");
+        git(&a, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(a.join("f.txt"), "other version\n").unwrap();
+        git(&a, &["commit", "-qam", "other"]);
+        git(&a, &["checkout", "-q", "main"]);
+        std::fs::write(a.join("f.txt"), "my uncommitted work\n").unwrap();
+
+        let l = list_branches(a.to_str().unwrap()).unwrap();
+        assert_eq!(l.dirty, 1);
+        let err = checkout_in(a.to_str().unwrap(), "other", "local", false).unwrap_err();
+        assert!(err.contains("未提交的修改"), "{err}");
+        assert_eq!(branch_of(&a), "main", "失败时留在原分支");
+        assert_eq!(std::fs::read_to_string(a.join("f.txt")).unwrap(), "my uncommitted work\n", "不丢失未提交修改");
+    }
+
+    #[test]
+    fn checkout_rejects_bad_or_missing_branches() {
+        let (a, _b, _o) = setup("badbranch");
+        let p = a.to_str().unwrap();
+        assert!(checkout_in(p, "--orphan", "local", false).unwrap_err().contains("非法"));
+        assert!(checkout_in(p, "a b", "local", false).unwrap_err().contains("非法"));
+        assert!(checkout_in(p, "nope", "local", false).unwrap_err().contains("不存在"));
+        assert!(checkout_in(p, "origin/nope", "remote", false).unwrap_err().contains("不存在"));
+        assert!(checkout_in(std::env::temp_dir().to_str().unwrap(), "main", "local", false).is_err());
+    }
+
+    #[test]
+    fn parse_branches_handles_odd_subjects() {
+        let text = "refs/heads/main\u{1f}*\u{1f}abc1234\u{1f}2 days ago\u{1f}fix: a\tb | c\n\
+                    refs/remotes/origin/HEAD\u{1f} \u{1f}abc1234\u{1f}2 days ago\u{1f}x\n\
+                    refs/remotes/origin/dev\u{1f} \u{1f}def5678\u{1f}1 day ago\u{1f}wip\n\
+                    garbage line\n";
+        let b = parse_branches(text);
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].subject, "fix: a\tb | c");
+        assert_eq!(b[1].name, "origin/dev");
     }
 }

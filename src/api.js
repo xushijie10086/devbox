@@ -44,6 +44,10 @@ export const api = {
 
   // 一键拉取代码 / 运行时版本（Node、JDK）
   gitPull: (id) => invoke("git_pull", { id }),
+  gitBranches: (id) => invoke("git_branches", { id }),
+  gitCheckout: (id, name, kind) => invoke("git_checkout", { id, name, kind }),
+  gitFetch: (id) => invoke("git_fetch", { id }),
+  projectBranches: () => invoke("project_branches"),
   listRuntimes: () => invoke("list_runtimes"),
 
   // 快捷入口
