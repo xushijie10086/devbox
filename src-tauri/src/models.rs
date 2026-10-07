@@ -83,6 +83,22 @@ pub struct ProjectStatus {
     pub port_up: Option<bool>,
 }
 
+/// 启动结果：level 为 "success" 或 "warning"（失败走 Err，不在这里）
+#[derive(Serialize, Clone, Debug)]
+pub struct StartOutcome {
+    pub level: &'static str,
+    pub message: String,
+}
+
+impl StartOutcome {
+    pub fn success(message: String) -> Self {
+        Self { level: "success", message }
+    }
+    pub fn warning(message: String) -> Self {
+        Self { level: "warning", message }
+    }
+}
+
 /// 端口占用信息（来自 lsof）
 #[derive(Serialize, Clone, Debug)]
 pub struct PortInfo {

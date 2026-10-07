@@ -14,6 +14,7 @@ export function mount(root) {
   let statuses = {};
   let timer = null;
   let drag = null; // 拖拽上下文，见 startDrag
+  const starting = new Set(); // 正在等待启动结果的项目 id
 
   const list = el("div", { class: "card-grid" });
   const header = el("div", { class: "view-header sticky-header" }, [
@@ -177,19 +178,21 @@ export function mount(root) {
       meta.push(el("span", { class: "meta" }, fmtUptime(st.uptime_secs)));
     }
 
-    const runBtns = running
+    const runBtns = starting.has(p.id)
+      ? [el("button", { class: "run-btn", disabled: "disabled" }, "⏳ 启动中…")]
+      : running
       ? [
           el("button", { class: "danger-btn", onclick: () => act(api.stopProject(p.id), "已停止") }, "■ 停止"),
-          el("button", { class: "ghost-btn", onclick: () => act(api.restartProject(p.id), "已重启") }, "↻ 重启"),
+          el("button", { class: "ghost-btn", onclick: () => launch(p, api.restartProject) }, "↻ 重启"),
         ]
-      : [el("button", { class: "run-btn", onclick: () => act(api.startProject(p.id), "已启动") }, "▶ 启动")];
+      : [el("button", { class: "run-btn", onclick: () => launch(p, api.startProject) }, "▶ 启动")];
 
     const quick = el("div", { class: "quick-actions" }, [
       iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
       p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
       iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
       iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
-      running && iconBtn("logsView", "查看日志", () => openLogModal(p)),
+      iconBtn("logsView", "查看日志", () => openLogModal(p)), // 进程退出后日志仍保留，便于排查启动失败
       el("span", { class: "quick-spacer" }),
       iconBtn("edit", "编辑", () => openEditor(p)),
       iconBtn("trash", "删除", () => removeProject(p), "danger"),
@@ -219,6 +222,22 @@ export function mount(root) {
     });
 
     return card;
+  }
+
+  // 启动 / 重启并反馈结果：成功、成功但有提醒、失败（含原因）。
+  // 后端会等到端口就绪或进程提前退出才返回，期间卡片显示「启动中…」。
+  async function launch(p, fn) {
+    starting.add(p.id);
+    render();
+    try {
+      const out = await fn(p.id);
+      toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+    } finally {
+      starting.delete(p.id);
+      await refresh();
+    }
   }
 
   async function act(promise, okMsg) {

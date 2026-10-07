@@ -21,6 +21,9 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 let toastTimer = null;
+// 失败 / 警告信息里有原因和日志片段，需要更长的阅读时间
+const TOAST_MS = { info: 3200, success: 3200, warning: 8000, error: 10000 };
+
 export function toast(message, kind = "info") {
   const root = document.getElementById("toast-root");
   root.innerHTML = "";
@@ -31,7 +34,7 @@ export function toast(message, kind = "info") {
   toastTimer = setTimeout(() => {
     node.classList.remove("show");
     setTimeout(() => node.remove(), 300);
-  }, 3200);
+  }, TOAST_MS[kind] ?? 3200);
 }
 
 /** 包装异步操作，自动处理错误提示 */
