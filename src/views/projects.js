@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { el, toast, guard, fmtUptime, confirmDialog, summarizeStart } from "../ui.js";
+import { el, toast, guard, fmtUptime, confirmDialog, summarizeStart, summarizePull } from "../ui.js";
 import { icon } from "../icons.js";
 
 // 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
@@ -25,6 +25,7 @@ export function mount(root) {
   const starting = new Set(); // 正在等待启动结果的项目 id
   const pulling = new Set(); // 正在拉取代码的项目 id
   let branches = {}; // 项目 id -> { name, detached }，只含 git 项目
+  let gitStatus = {}; // 项目 id -> { ahead, behind, dirty, has_upstream }（后台每 20 秒刷新）
 
   const tabsEl = el("div", { class: "tabs" });
   const groupTools = el("div", { class: "group-tools" });
@@ -68,7 +69,7 @@ export function mount(root) {
 
     tabsEl.innerHTML = "";
     const addTab = (id, label, count) => {
-      const t = el("button", { class: `tab${id === activeTab ? " active" : ""}`, onclick: () => selectTab(id) }, [
+      const t = el("button", { class: `tab${id === activeTab ? " active" : ""}`, "data-tab": id, onclick: () => selectTab(id) }, [
         el("span", {}, label),
         el("span", { class: "tab-count" }, String(count)),
       ]);
@@ -107,7 +108,14 @@ export function mount(root) {
       title: runningN ? `停止${tabLabel()}里运行中的 ${runningN} 个项目` : "没有运行中的项目",
       onclick: () => stopMany(rows.filter((p) => statuses[p.id]?.running)),
     }, `■ ${scope}停止`);
-    groupTools.append(startAll, stopAll);
+    const gitRows = rows.filter((p) => branches[p.id]);
+    const pullAll = el("button", {
+      class: "ghost-btn sm",
+      disabled: gitRows.length === 0 || gitRows.every((p) => pulling.has(p.id)) ? "disabled" : false,
+      title: gitRows.length ? `对${tabLabel()}里 ${gitRows.length} 个 git 项目依次执行 git pull（只快进）` : "这里没有 git 项目",
+      onclick: () => pullMany(gitRows),
+    }, `⬇ ${scope}拉取`);
+    groupTools.append(startAll, stopAll, pullAll);
 
     if (groups.includes(activeTab)) {
       groupTools.append(
@@ -173,6 +181,33 @@ export function mount(root) {
     await refresh();
   }
 
+  // 批量拉取：最多 3 个并发，结果汇总成一条提示（哪些有更新、哪些已是最新、哪些失败及原因）
+  async function pullMany(items) {
+    items = items.filter((p) => !pulling.has(p.id));
+    if (items.length === 0) return;
+    toast(`正在拉取 ${items.length} 个项目的代码…`, "info");
+    items.forEach((p) => pulling.add(p.id));
+    render();
+    renderGroupTools();
+    const results = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const i = next++;
+        try {
+          results[i] = { ok: true, out: await api.gitPull(items[i].id) };
+        } catch (e) {
+          results[i] = { ok: false, err: String(e) };
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    items.forEach((p) => pulling.delete(p.id));
+    const sum = summarizePull(items, results, (p) => statuses[p.id]?.running);
+    toast(sum.text, sum.kind);
+    await refresh();
+  }
+
   async function stopMany(items) {
     if (items.length === 0) return;
     if (!(await confirmDialog(`停止${tabLabel()}里 ${items.length} 个运行中的项目？`))) return;
@@ -194,7 +229,8 @@ export function mount(root) {
     const placeholder = el("div", { class: "row-placeholder" });
     placeholder.style.height = `${rect.height}px`;
 
-    drag = { row, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    drag = { row, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top, dropTab: null };
+    window.getSelection()?.removeAllRanges(); // 进入拖拽前浏览器可能已选中了文字，清掉
 
     // 占位块留在原位撑住列表，行移到 body 上用 fixed 跟随指针
     list.insertBefore(placeholder, row);
@@ -236,6 +272,7 @@ export function mount(root) {
     row.style.left = `${e.clientX - drag.dx}px`;
     row.style.top = `${e.clientY - drag.dy}px`;
 
+    markDropTab(e.clientX, e.clientY);
     const after = rowAfterPoint(e.clientY);
     if (after) {
       if (after !== placeholder.nextElementSibling) list.insertBefore(placeholder, after);
@@ -245,9 +282,34 @@ export function mount(root) {
     autoScroll(e.clientY);
   }
 
+  /** 拖到某个分组 tab 上时高亮它，松手即把项目移到该分组（「全部」和当前所在 tab 不可作为目标） */
+  function markDropTab(x, y) {
+    const t = document.elementFromPoint(x, y)?.closest(".tab[data-tab]");
+    const id = t?.dataset.tab;
+    const ok = t && id !== TAB_ALL && id !== activeTab;
+    tabsEl.querySelectorAll(".tab.drop-target").forEach((n) => n.classList.remove("drop-target"));
+    drag.dropTab = ok ? id : null;
+    if (ok) t.classList.add("drop-target");
+    drag.row.classList.toggle("over-tab", !!ok); // 被拖的行半透明，露出下面高亮的 tab
+  }
+
+  async function moveToGroup(projectId, tabId) {
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return;
+    const group = tabId === TAB_NONE ? null : tabId;
+    try {
+      await api.saveProject({ ...p, group });
+      toast(`「${p.name}」已移到${group ? `分组「${group}」` : "未分组"}`, "success");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    await refresh();
+  }
+
   async function endDrag() {
     if (!drag) return;
-    const { row, placeholder } = drag;
+    const { row, placeholder, dropTab } = drag;
+    tabsEl.querySelectorAll(".tab.drop-target").forEach((n) => n.classList.remove("drop-target"));
     drag = null;
     document.removeEventListener("pointermove", onMove);
     document.removeEventListener("pointerup", endDrag);
@@ -260,6 +322,10 @@ export function mount(root) {
     list.insertBefore(row, placeholder);
     placeholder.remove();
 
+    if (dropTab) {
+      await moveToGroup(row.dataset.id, dropTab); // 松手在 tab 上：换分组，不改顺序
+      return;
+    }
     await commitOrder();
     render(); // 补上拖拽期间被跳过的状态刷新
   }
@@ -332,6 +398,11 @@ export function mount(root) {
       branches = await api.projectBranches();
     } catch (_) {
       branches = {};
+    }
+    try {
+      gitStatus = await api.projectGitStatus();
+    } catch (_) {
+      gitStatus = {};
     }
   }
 
@@ -416,6 +487,10 @@ export function mount(root) {
 
     const row = el("div", { class: "prow", "data-id": p.id }, [handle, nameCell, cmdCell, portCell, metaCell, actions]);
 
+    // 在行的非交互区域按下时，阻止浏览器开始原生文本选择 / 文字拖拽（否则一拖动就会选中一大片文字）
+    row.addEventListener("mousedown", (e) => {
+      if (e.button === 0 && !e.target.closest("button, input, textarea, select, a, .cmd-cell")) e.preventDefault();
+    });
     handle.addEventListener("pointerdown", (e) => startDrag(row, e));
     row.addEventListener("pointerdown", (e) => {
       if (!handle.contains(e.target)) armDrag(row, e);
@@ -533,12 +608,22 @@ export function mount(root) {
   function branchChip(p) {
     const b = branches[p.id];
     if (!b) return null;
+    const gs = gitStatus[p.id];
+    // 徽标：↑ 本地领先（待推送）、↓ 落后远程（待拉取，以最近一次 fetch 为准）、● 有未提交修改
+    const notes = [];
+    if (gs?.ahead) notes.push(`领先远程 ${gs.ahead} 个提交（还没推送）`);
+    if (gs?.behind) notes.push(`落后远程 ${gs.behind} 个提交（可以拉取）`);
+    if (gs?.dirty) notes.push(`${gs.dirty} 个文件有未提交的修改`);
+    if (gs && !gs.has_upstream) notes.push("当前分支没有设置上游分支");
     const chip = el("button", {
       class: `rt-chip br-chip${b.detached ? " detached" : ""}`,
-      title: b.detached ? `游离 HEAD（${b.name}），点击切换到某个分支` : `当前分支 ${b.name}（点击切换分支）`,
+      title: `${b.detached ? `游离 HEAD（${b.name}），点击切换到某个分支` : `当前分支 ${b.name}（点击切换分支）`}${notes.length ? `\n${notes.join("\n")}` : ""}`,
       onclick: () => openBranchDialog(p),
     });
-    chip.append(icon("branch", 11), el("span", {}, b.detached ? `游离 ${b.name}` : b.name));
+    chip.append(icon("branch", 11), el("span", { class: "br-name-text" }, b.detached ? `游离 ${b.name}` : b.name));
+    if (gs?.ahead) chip.append(el("span", { class: "gs ahead" }, `↑${gs.ahead}`));
+    if (gs?.behind) chip.append(el("span", { class: "gs behind" }, `↓${gs.behind}`));
+    if (gs?.dirty) chip.append(el("span", { class: "gs dirty" }, `●${gs.dirty}`));
     return chip;
   }
 

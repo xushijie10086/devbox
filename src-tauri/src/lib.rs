@@ -18,6 +18,8 @@ pub fn run() {
             tray::build(app.handle())?;
             // 后台巡检：窗口关着也能发现项目崩溃，并持续记录「正在运行的项目」
             commands::lifecycle::spawn_supervisor(app.handle().clone());
+            // 后台刷新各项目的 git 状态（领先 / 落后 / 未提交）
+            commands::git::spawn_status_worker(app.handle().clone());
             // Ctrl+C / kill：先停掉所有项目再退出，不留孤儿进程
             commands::lifecycle::install_signal_handler(app.handle().clone());
             // 启动本地 HTTP 桥接服务，供 MCP 适配器 / agent 调用
@@ -66,6 +68,7 @@ pub fn run() {
             commands::git::git_checkout,
             commands::git::git_fetch,
             commands::git::project_branches,
+            commands::git::project_git_status,
             commands::runtime::list_runtimes,
             // ports
             commands::ports::list_ports,

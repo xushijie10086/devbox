@@ -35,6 +35,8 @@ pub struct AppState {
     pub procs: Mutex<HashMap<String, RunningProc>>,
     /// project_id -> 日志缓冲（读线程写入，前端轮询读取）
     pub logs: Mutex<HashMap<String, Arc<Mutex<VecDeque<LogLine>>>>>,
+    /// project_id -> 最近一次计算的 git 状态（后台线程刷新）
+    pub git_status: Mutex<HashMap<String, crate::commands::git::GitStatus>>,
     /// project_id -> 正在运行的脚本任务
     pub jobs: Mutex<HashMap<String, Job>>,
     /// 尚未被前端取走的进程退出通知
@@ -66,6 +68,7 @@ impl AppState {
             config_path,
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
+            git_status: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
             exit_events: Mutex::new(Vec::new()),
             quitting: AtomicBool::new(false),

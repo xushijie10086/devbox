@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use tauri::State;
+use tauri::{Manager, State};
 
 /// 网络拉取的最长等待时间
 const PULL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -32,7 +32,9 @@ pub fn git_pull(id: String, state: State<AppState>) -> Result<StartOutcome, Stri
         .cloned()
         .ok_or("找不到项目")?;
     let running = state.procs.lock().unwrap().contains_key(&id);
-    pull_in(&project.path, running)
+    let result = pull_in(&project.path, running);
+    refresh_status_of(&state, &id);
+    result
 }
 
 struct GitOut {
@@ -44,9 +46,26 @@ struct GitOut {
 /// 通过登录 shell 运行 git（保证能找到 Homebrew 装的 git），并避免交互式提示卡住：
 /// 不弹终端口令提示、ssh 不询问；LC_ALL=C 让报错是英文，便于识别原因。
 fn run_git(dir: &str, args: &[&str], timeout: Duration) -> Result<GitOut, String> {
-    let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-lc", "exec git \"$@\"", "sh"])
-        .args(args)
+    run_git_with(dir, args, timeout, true)
+}
+
+/// login 为 false 时直接执行 git，不经过登录 shell：后台轮询状态用，省掉加载用户 profile 的开销
+fn run_git_with(dir: &str, args: &[&str], timeout: Duration, login: bool) -> Result<GitOut, String> {
+    let mut cmd = if login {
+        let mut c = Command::new("/bin/sh");
+        c.args(["-lc", "exec git \"$@\"", "sh"]);
+        c
+    } else {
+        // GUI 应用的 PATH 很短，补上 Homebrew 的常见位置
+        let mut c = Command::new("git");
+        let path = std::env::var("PATH").unwrap_or_default();
+        c.env("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{path}"))
+            // 只读查询不去刷新 / 锁定索引，免得和用户自己的 git 操作抢锁。
+            // 只设在这个子进程上，不污染本进程（以及之后启动的项目）的环境
+            .env("GIT_OPTIONAL_LOCKS", "0");
+        c
+    };
+    cmd.args(args)
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
@@ -169,6 +188,83 @@ fn explain_failure(action: &str, stderr: &str, stdout: &str) -> String {
 }
 
 
+// ---------- 状态徽标：领先 / 落后 / 未提交 ----------
+
+/// 一个仓库的轻量状态，用于在项目行上显示徽标
+#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+pub struct GitStatus {
+    /// 本地领先上游的提交数（还没推送）
+    pub ahead: u32,
+    /// 本地落后上游的提交数（以最近一次 fetch 的结果为准）
+    pub behind: u32,
+    /// 有未提交修改的已跟踪文件数
+    pub dirty: u32,
+    pub has_upstream: bool,
+}
+
+/// 解析 `git status --porcelain=v2 --branch` 的输出
+pub fn parse_status(text: &str) -> GitStatus {
+    let mut st = GitStatus::default();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.ab ") {
+            // "+2 -1"
+            st.has_upstream = true;
+            for tok in rest.split_whitespace() {
+                if let Some(n) = tok.strip_prefix('+') {
+                    st.ahead = n.parse().unwrap_or(0);
+                } else if let Some(n) = tok.strip_prefix('-') {
+                    st.behind = n.parse().unwrap_or(0);
+                }
+            }
+        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
+            st.dirty += 1; // 普通修改 / 重命名 / 冲突
+        }
+    }
+    st
+}
+
+/// 计算某个目录的 git 状态；不是 git 仓库返回 None
+pub fn compute_status(path: &str) -> Option<GitStatus> {
+    find_git_dir(Path::new(path))?;
+    let out = run_git_with(path, &["status", "--porcelain=v2", "--branch", "--untracked-files=no"], Duration::from_secs(10), false).ok()?;
+    out.ok.then(|| parse_status(&out.stdout))
+}
+
+/// 前端读取：所有 git 项目最近一次计算的状态（来自后台缓存，很轻）
+#[tauri::command]
+pub fn project_git_status(state: State<AppState>) -> HashMap<String, GitStatus> {
+    state.git_status.lock().unwrap().clone()
+}
+
+/// 立即重算某个项目的状态（拉取 / 切换分支之后调用，让徽标马上更新）
+pub fn refresh_status_of(state: &AppState, id: &str) {
+    let Some(path) = state.config.lock().unwrap().projects.iter().find(|p| p.id == id).map(|p| p.path.clone()) else {
+        return;
+    };
+    let mut cache = state.git_status.lock().unwrap();
+    match compute_status(&path) {
+        Some(s) => {
+            cache.insert(id.to_string(), s);
+        }
+        None => {
+            cache.remove(id);
+        }
+    }
+}
+
+/// 重算所有项目的状态，供后台线程周期调用
+pub fn refresh_all_status(state: &AppState) {
+    let projects: Vec<(String, String)> =
+        state.config.lock().unwrap().projects.iter().map(|p| (p.id.clone(), p.path.clone())).collect();
+    let mut fresh: HashMap<String, GitStatus> = HashMap::new();
+    for (id, path) in projects {
+        if let Some(s) = compute_status(&path) {
+            fresh.insert(id, s);
+        }
+    }
+    *state.git_status.lock().unwrap() = fresh;
+}
+
 // ---------- 分支 ----------
 
 /// 项目当前所在分支；detached 时 name 是短哈希
@@ -210,6 +306,18 @@ pub fn current_branch(path: &str) -> Option<BranchInfo> {
         }
         None => None,
     }
+}
+
+/// 后台线程：每 20 秒重算一次所有项目的 git 状态。单独一个线程，
+/// 某个大仓库的 status 慢也不会拖住进程巡检（崩溃检测、托盘刷新）
+pub fn spawn_status_worker(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        {
+            let state = app.state::<AppState>();
+            refresh_all_status(&state);
+        }
+        std::thread::sleep(Duration::from_secs(20));
+    });
 }
 
 /// 所有项目的当前分支（id -> 分支）；非 git 项目不出现
@@ -338,7 +446,9 @@ fn parse_branches(text: &str) -> Vec<BranchEntry> {
 pub fn git_checkout(id: String, name: String, kind: String, state: State<AppState>) -> Result<StartOutcome, String> {
     let project = project_of(&state, &id)?;
     let running = state.procs.lock().unwrap().contains_key(&id);
-    checkout_in(&project.path, &name, &kind, running)
+    let result = checkout_in(&project.path, &name, &kind, running);
+    refresh_status_of(&state, &id);
+    result
 }
 
 fn checkout_in(path: &str, name: &str, kind: &str, project_running: bool) -> Result<StartOutcome, String> {
@@ -395,6 +505,7 @@ pub fn git_fetch(id: String, state: State<AppState>) -> Result<StartOutcome, Str
     if !out.ok {
         return Err(explain_failure("获取远程分支", &out.stderr, &out.stdout));
     }
+    refresh_status_of(&state, &id); // fetch 之后「落后」数会变
     Ok(StartOutcome::success("已获取远程最新分支".into()))
 }
 
@@ -624,5 +735,106 @@ mod tests {
         assert_eq!(b.len(), 2);
         assert_eq!(b[0].subject, "fix: a\tb | c");
         assert_eq!(b[1].name, "origin/dev");
+    }
+
+    // ---------- 状态徽标 ----------
+
+    #[test]
+    fn parse_status_reads_ahead_behind_and_dirty() {
+        let text = "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -3\n\
+                    1 .M N... 100644 100644 100644 a b f1.txt\n\
+                    2 R. N... 100644 100644 100644 a b R100 new.txt\told.txt\n\
+                    u UU N... 1 2 3 4 a b c conflict.txt\n";
+        assert_eq!(parse_status(text), GitStatus { ahead: 2, behind: 3, dirty: 3, has_upstream: true });
+        // 没有上游：没有 branch.ab 行
+        let st = parse_status("# branch.oid abc\n# branch.head main\n1 .M N... x x x x x f.txt\n");
+        assert_eq!(st, GitStatus { ahead: 0, behind: 0, dirty: 1, has_upstream: false });
+        assert_eq!(parse_status(""), GitStatus::default());
+    }
+
+    #[test]
+    fn status_of_a_real_repo_tracks_ahead_behind_dirty() {
+        let (a, b, _o) = setup("status");
+        let p = a.to_str().unwrap();
+        let s = compute_status(p).unwrap();
+        assert_eq!(s, GitStatus { ahead: 0, behind: 0, dirty: 0, has_upstream: true });
+
+        // 本地提交 → 领先 1
+        std::fs::write(a.join("l.txt"), "l").unwrap();
+        git(&a, &["add", "."]);
+        git(&a, &["commit", "-q", "-m", "local"]);
+        assert_eq!(compute_status(p).unwrap().ahead, 1);
+
+        // 远程新提交，fetch 之后 → 落后 1（没 fetch 之前不知道）
+        push_commit_rebased(&b, "r.txt");
+        assert_eq!(compute_status(p).unwrap().behind, 0, "没 fetch，看不到远程的新提交");
+        git(&a, &["fetch", "-q"]);
+        let s = compute_status(p).unwrap();
+        assert_eq!((s.ahead, s.behind), (1, 1));
+
+        // 修改已跟踪文件 → dirty 1；新建未跟踪文件不算
+        std::fs::write(a.join("f.txt"), "changed\n").unwrap();
+        std::fs::write(a.join("untracked.txt"), "u").unwrap();
+        assert_eq!(compute_status(p).unwrap().dirty, 1);
+    }
+
+    fn push_commit_rebased(repo: &Path, file: &str) {
+        std::fs::write(repo.join(file), "x").unwrap();
+        git(repo, &["add", "."]);
+        git(repo, &["commit", "-q", "-m", file]);
+        git(repo, &["push", "-q", "origin", "HEAD:main"]);
+    }
+
+    #[test]
+    fn no_upstream_and_non_repo() {
+        let (a, _b, _o) = setup("noup");
+        git(&a, &["checkout", "-q", "-b", "local-only"]);
+        let s = compute_status(a.to_str().unwrap()).unwrap();
+        assert!(!s.has_upstream && s.ahead == 0 && s.behind == 0);
+        let plain = std::env::temp_dir().join(format!("devbox-nogit-status-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(compute_status(plain.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn status_polling_does_not_leak_env_into_this_process() {
+        let (a, _b, _o) = setup("envleak");
+        compute_status(a.to_str().unwrap()).unwrap();
+        assert!(std::env::var_os("GIT_OPTIONAL_LOCKS").is_none(), "不能污染本进程环境");
+    }
+
+    #[test]
+    fn status_query_does_not_take_the_index_lock() {
+        // GIT_OPTIONAL_LOCKS=0：即使用户正在做 git 操作（持有 index.lock），状态查询也不会失败或卡住
+        let (a, _b, _o) = setup("lock");
+        std::fs::write(a.join(".git/index.lock"), "").unwrap();
+        assert!(compute_status(a.to_str().unwrap()).is_some());
+        std::fs::remove_file(a.join(".git/index.lock")).unwrap();
+    }
+
+    #[test]
+    fn cache_is_updated_after_a_pull() {
+        use crate::models::Config;
+        let (a, b, _o) = setup("cache");
+        let st = AppState::for_test(Config {
+            projects: vec![serde_json::from_value(serde_json::json!({
+                "id": "p", "name": "p", "path": a.to_string_lossy(), "start_command": "x"
+            }))
+            .unwrap()],
+            ..Default::default()
+        });
+        refresh_all_status(&st);
+        assert_eq!(st.git_status.lock().unwrap().get("p").unwrap().behind, 0);
+        push_commit_rebased(&b, "n.txt");
+        git(&a, &["fetch", "-q"]);
+        refresh_status_of(&st, "p");
+        assert_eq!(st.git_status.lock().unwrap().get("p").unwrap().behind, 1);
+        pull_in(a.to_str().unwrap(), false).unwrap();
+        refresh_status_of(&st, "p");
+        assert_eq!(st.git_status.lock().unwrap().get("p").unwrap().behind, 0, "拉取后徽标清零");
+        // 非 git 项目不进缓存
+        st.config.lock().unwrap().projects[0].path = "/tmp".into();
+        refresh_all_status(&st);
+        assert!(st.git_status.lock().unwrap().is_empty());
     }
 }

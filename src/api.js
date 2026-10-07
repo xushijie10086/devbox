@@ -63,6 +63,7 @@ export const api = {
   gitCheckout: (id, name, kind) => invoke("git_checkout", { id, name, kind }),
   gitFetch: (id) => invoke("git_fetch", { id }),
   projectBranches: () => invoke("project_branches"),
+  projectGitStatus: () => invoke("project_git_status"),
   listRuntimes: () => invoke("list_runtimes"),
 
   // 快捷入口

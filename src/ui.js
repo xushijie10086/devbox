@@ -94,6 +94,27 @@ export function summarizeStart(items, results) {
   return { text: `成功 ${ok} 个，失败 ${failed.length} 个：\n${failed.join("\n")}`, kind: "error" };
 }
 
+/** 汇总批量拉取的结果：几个有更新（改动了什么）、几个已是最新、哪些失败及原因 */
+export function summarizePull(items, results, isRunning = () => false) {
+  const updated = [];
+  const same = [];
+  const failed = [];
+  results.forEach((r, i) => {
+    const name = items[i].name;
+    if (!r.ok) failed.push(`${name}：${String(r.err).split("\n")[0]}`);
+    else if (r.out.message.includes("已是最新")) same.push(name);
+    else {
+      const first = r.out.message.split("\n")[0].replace(/^分支 \S+ /, "");
+      updated.push(`${name}：${first}${isRunning(items[i]) ? "（运行中，需重启）" : ""}`);
+    }
+  });
+  const head = `拉取完成：${updated.length} 个有更新、${same.length} 个已是最新${failed.length ? `、${failed.length} 个失败` : ""}`;
+  return {
+    text: [head, ...updated.map((x) => `↓ ${x}`), ...failed.map((x) => `✖ ${x}`)].join("\n"),
+    kind: failed.length ? "error" : "success",
+  };
+}
+
 export function fmtUptime(secs) {
   if (secs == null) return "—";
   if (secs < 60) return `${secs}s`;
