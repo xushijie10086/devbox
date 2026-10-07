@@ -7,6 +7,10 @@ export const api = {
   saveProject: (project) => invoke("save_project", { project }),
   deleteProject: (id) => invoke("delete_project", { id }),
   reorderProjects: (ids) => invoke("reorder_projects", { ids }),
+  listProjectGroups: () => invoke("list_project_groups"),
+  addProjectGroup: (name) => invoke("add_project_group", { name }),
+  renameProjectGroup: (oldName, newName) => invoke("rename_project_group", { oldName, newName }),
+  deleteProjectGroup: (name) => invoke("delete_project_group", { name }),
   detectProject: (path) => invoke("detect_project", { path }),
   pickDirectory: () => invoke("pick_directory"),
 

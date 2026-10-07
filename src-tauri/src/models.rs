@@ -31,6 +31,9 @@ pub struct Project {
     /// 崩溃后是否自动重启
     #[serde(default)]
     pub auto_restart: bool,
+    /// 所属项目组（项目库里的 tab 分类）；None 表示未分组
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -56,6 +59,9 @@ pub struct Config {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// 项目组列表（决定 tab 的顺序，也允许存在暂时没有项目的空组）
+    #[serde(default)]
+    pub project_groups: Vec<String>,
 }
 
 /// 自动探测到的项目信息（用于表单一键填充）

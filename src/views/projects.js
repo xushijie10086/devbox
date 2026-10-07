@@ -2,6 +2,13 @@ import { api } from "../api.js";
 import { el, toast, guard, fmtUptime, confirmDialog } from "../ui.js";
 import { icon } from "../icons.js";
 
+// 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
+const TAB_ALL = "__all__";
+const TAB_NONE = "__none__";
+
+// 记住上次停留的 tab（视图重新挂载、点「刷新」后仍停在原处）
+let activeTab = TAB_ALL;
+
 // 生成一个带 SVG 图标的操作按钮
 function iconBtn(name, title, onclick, extraClass = "") {
   const btn = el("button", { class: `icon-btn ${extraClass}`.trim(), title, onclick });
@@ -11,38 +18,200 @@ function iconBtn(name, title, onclick, extraClass = "") {
 
 export function mount(root) {
   let projects = [];
+  let groups = [];
   let statuses = {};
   let timer = null;
   let drag = null; // 拖拽上下文，见 startDrag
   const starting = new Set(); // 正在等待启动结果的项目 id
 
-  const list = el("div", { class: "card-grid" });
-  const header = el("div", { class: "view-header sticky-header" }, [
-    el("h1", {}, "项目"),
-    el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
+  const tabsEl = el("div", { class: "tabs" });
+  const groupTools = el("div", { class: "group-tools" });
+  const header = el("div", { class: "sticky-header" }, [
+    el("div", { class: "view-header" }, [
+      el("h1", {}, "项目库"),
+      el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
+    ]),
+    el("div", { class: "tabs-bar" }, [tabsEl, groupTools]),
   ]);
-  root.append(header, list);
+  const thead = el("div", { class: "prow prow-head" }, [
+    el("span", {}), el("span", {}, "项目"), el("span", {}, "启动命令"),
+    el("span", {}, "端口"), el("span", { class: "meta-cell" }, "运行"), el("span", { class: "head-actions" }, "操作"),
+  ]);
+  const list = el("div", { class: "plist" });
+  const table = el("div", { class: "table ptable" }, [thead, list]);
+  root.append(header, table);
+
+  // ---------- 分组 / tab ----------
+
+  const ungrouped = () => projects.filter((p) => !p.group);
+  const inGroup = (g) => projects.filter((p) => p.group === g);
+
+  /** 当前 tab 下要显示的项目（保持全局顺序） */
+  function visibleProjects() {
+    if (activeTab === TAB_ALL) return projects;
+    if (activeTab === TAB_NONE) return ungrouped();
+    return inGroup(activeTab);
+  }
+
+  /** 当前 tab 的名称，用于提示语 */
+  const tabLabel = () => (activeTab === TAB_ALL ? "全部项目" : activeTab === TAB_NONE ? "未分组" : activeTab);
+
+  function renderTabs() {
+    // 当前 tab 已不存在（分组被删 / 未分组已空）时回到「全部」
+    const exists =
+      activeTab === TAB_ALL ||
+      (activeTab === TAB_NONE && ungrouped().length > 0) ||
+      groups.includes(activeTab);
+    if (!exists) activeTab = TAB_ALL;
+
+    tabsEl.innerHTML = "";
+    const addTab = (id, label, count) => {
+      const t = el("button", { class: `tab${id === activeTab ? " active" : ""}`, onclick: () => selectTab(id) }, [
+        el("span", {}, label),
+        el("span", { class: "tab-count" }, String(count)),
+      ]);
+      tabsEl.append(t);
+    };
+    addTab(TAB_ALL, "全部", projects.length);
+    for (const g of groups) addTab(g, g, inGroup(g).length);
+    if (ungrouped().length > 0 && groups.length > 0) addTab(TAB_NONE, "未分组", ungrouped().length);
+    tabsEl.append(el("button", { class: "tab tab-add", title: "新增项目组", onclick: () => openGroupDialog() }, "＋"));
+
+    renderGroupTools();
+  }
+
+  function selectTab(id) {
+    if (drag) return;
+    activeTab = id;
+    renderTabs();
+    render();
+  }
+
+  /** 右侧：当前 tab 的批量操作 + 分组管理 */
+  function renderGroupTools() {
+    groupTools.innerHTML = "";
+    const rows = visibleProjects();
+    const runningN = rows.filter((p) => statuses[p.id]?.running).length;
+    const idle = rows.filter((p) => !statuses[p.id]?.running && !starting.has(p.id));
+    const scope = activeTab === TAB_ALL ? "全部" : "本组";
+
+    const startAll = el("button", {
+      class: "run-btn sm", disabled: idle.length === 0 ? "disabled" : false,
+      title: idle.length ? `启动${tabLabel()}里未运行的 ${idle.length} 个项目` : "没有可启动的项目",
+      onclick: () => startMany(idle),
+    }, `▶ ${scope}启动`);
+    const stopAll = el("button", {
+      class: "danger-btn sm", disabled: runningN === 0 ? "disabled" : false,
+      title: runningN ? `停止${tabLabel()}里运行中的 ${runningN} 个项目` : "没有运行中的项目",
+      onclick: () => stopMany(rows.filter((p) => statuses[p.id]?.running)),
+    }, `■ ${scope}停止`);
+    groupTools.append(startAll, stopAll);
+
+    if (groups.includes(activeTab)) {
+      groupTools.append(
+        el("span", { class: "tools-sep" }),
+        iconBtn("edit", "重命名分组", () => openGroupDialog(activeTab)),
+        iconBtn("trash", "删除分组（项目保留，回到未分组）", () => removeGroup(activeTab), "danger"),
+      );
+    }
+  }
+
+  /** 新增 / 重命名项目组 */
+  function openGroupDialog(oldName) {
+    const input = el("input", { type: "text", placeholder: "例如：后端服务", value: oldName ?? "", maxlength: "30" });
+    const form = el("div", { class: "form" }, [el("label", { class: "form-row" }, [el("span", {}, "分组名称"), input])]);
+    showModal(oldName ? "重命名分组" : "新增项目组", form, async () => {
+      const name = input.value.trim();
+      if (!name) {
+        toast("分组名称不能为空", "error");
+        return false;
+      }
+      try {
+        const saved = oldName
+          ? await api.renameProjectGroup(oldName, name)
+          : await api.addProjectGroup(name);
+        activeTab = saved; // 新建 / 改名后直接切到该分组
+        toast(oldName ? "已重命名" : "已创建分组", "success");
+      } catch (e) {
+        toast(String(e), "error");
+        return false;
+      }
+      await refresh();
+      return true;
+    });
+    setTimeout(() => input.focus(), 0);
+  }
+
+  async function removeGroup(name) {
+    const n = inGroup(name).length;
+    const tip = n ? `删除分组「${name}」？其中 ${n} 个项目不会被删除，会回到「未分组」。` : `删除空分组「${name}」？`;
+    if (!(await confirmDialog(tip))) return;
+    try {
+      await api.deleteProjectGroup(name);
+      toast("已删除分组", "success");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    await refresh();
+  }
+
+  // ---------- 批量操作 ----------
+
+  /** 汇总一批项目的结果，只在一条提示里说清：几个成功、哪些失败、为什么 */
+  async function startMany(items) {
+    if (items.length === 0) return;
+    items.forEach((p) => starting.add(p.id));
+    render();
+    renderGroupTools();
+    const results = await Promise.allSettled(items.map((p) => api.startProject(p.id)));
+    items.forEach((p) => starting.delete(p.id));
+
+    const failed = [];
+    let warned = 0;
+    results.forEach((r, i) => {
+      if (r.status === "rejected") failed.push(`${items[i].name}：${String(r.reason).split("\n")[0]}`);
+      else if (r.value.level === "warning") warned++;
+    });
+    const ok = items.length - failed.length;
+    if (failed.length === 0) {
+      toast(warned ? `已启动 ${ok} 个项目，其中 ${warned} 个需留意（见各项目提示）` : `已启动 ${ok} 个项目`, warned ? "warning" : "success");
+    } else {
+      toast(`成功 ${ok} 个，失败 ${failed.length} 个：\n${failed.join("\n")}`, "error");
+    }
+    await refresh();
+  }
+
+  async function stopMany(items) {
+    if (items.length === 0) return;
+    if (!(await confirmDialog(`停止${tabLabel()}里 ${items.length} 个运行中的项目？`))) return;
+    const results = await Promise.allSettled(items.map((p) => api.stopProject(p.id)));
+    const failed = results.filter((r) => r.status === "rejected").length;
+    toast(failed ? `已停止 ${items.length - failed} 个，${failed} 个失败` : `已停止 ${items.length} 个项目`, failed ? "error" : "success");
+    await refresh();
+  }
+
+  // ---------- 拖拽排序 ----------
 
   // 用 Pointer 事件手写拖拽：macOS WKWebView 对 HTML5 drag-and-drop 支持不完整，
   // 拖拽途中移动源节点会被忽略，导致「能拖但插不进去」。
-  function startDrag(card, e) {
-    if (e.button !== 0 || drag || card.parentNode !== list) return;
+  function startDrag(row, e) {
+    if (e.button !== 0 || drag || row.parentNode !== list) return;
     e.preventDefault();
 
-    const rect = card.getBoundingClientRect();
-    const placeholder = el("div", { class: "card-placeholder" });
+    const rect = row.getBoundingClientRect();
+    const placeholder = el("div", { class: "row-placeholder" });
     placeholder.style.height = `${rect.height}px`;
 
-    drag = { card, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    drag = { row, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
 
-    // 占位块留在原位撑住网格，卡片移到 body 上用 fixed 跟随指针
-    list.insertBefore(placeholder, card);
-    card.style.width = `${rect.width}px`;
-    card.style.height = `${rect.height}px`;
-    card.style.left = `${rect.left}px`;
-    card.style.top = `${rect.top}px`;
-    card.classList.add("dragging");
-    document.body.append(card);
+    // 占位块留在原位撑住列表，行移到 body 上用 fixed 跟随指针
+    list.insertBefore(placeholder, row);
+    row.style.width = `${rect.width}px`;
+    row.style.height = `${rect.height}px`;
+    row.style.left = `${rect.left}px`;
+    row.style.top = `${rect.top}px`;
+    row.classList.add("dragging");
+    document.body.append(row);
     document.body.classList.add("dragging-active");
 
     document.addEventListener("pointermove", onMove);
@@ -50,10 +219,10 @@ export function mount(root) {
     document.addEventListener("pointercancel", endDrag);
   }
 
-  // 卡片空白处按下后拖动超过阈值才进入拖拽，避免点击、选中文本被误判；
-  // 按钮、输入框与命令框保持原有交互，不触发拖拽
-  function armDrag(card, down) {
-    if (down.button !== 0 || drag || down.target.closest("button, input, textarea, select, a, .card-cmd")) return;
+  // 行空白处按下后拖动超过阈值才进入拖拽，避免点击、选中文本被误判；
+  // 按钮、输入框与命令列保持原有交互，不触发拖拽
+  function armDrag(row, down) {
+    if (down.button !== 0 || drag || down.target.closest("button, input, textarea, select, a, .cmd-cell")) return;
     const disarm = () => {
       document.removeEventListener("pointermove", probe);
       document.removeEventListener("pointerup", disarm);
@@ -62,7 +231,7 @@ export function mount(root) {
     const probe = (e) => {
       if (Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < 5) return;
       disarm();
-      startDrag(card, down);
+      startDrag(row, down);
     };
     document.addEventListener("pointermove", probe);
     document.addEventListener("pointerup", disarm);
@@ -71,11 +240,11 @@ export function mount(root) {
 
   function onMove(e) {
     if (!drag) return;
-    const { card, placeholder } = drag;
-    card.style.left = `${e.clientX - drag.dx}px`;
-    card.style.top = `${e.clientY - drag.dy}px`;
+    const { row, placeholder } = drag;
+    row.style.left = `${e.clientX - drag.dx}px`;
+    row.style.top = `${e.clientY - drag.dy}px`;
 
-    const after = cardAfterPoint(e.clientX, e.clientY);
+    const after = rowAfterPoint(e.clientY);
     if (after) {
       if (after !== placeholder.nextElementSibling) list.insertBefore(placeholder, after);
     } else if (list.lastElementChild !== placeholder) {
@@ -86,149 +255,162 @@ export function mount(root) {
 
   async function endDrag() {
     if (!drag) return;
-    const { card, placeholder } = drag;
+    const { row, placeholder } = drag;
     drag = null;
     document.removeEventListener("pointermove", onMove);
     document.removeEventListener("pointerup", endDrag);
     document.removeEventListener("pointercancel", endDrag);
     document.body.classList.remove("dragging-active");
 
-    // 卡片落回占位块的位置
-    card.classList.remove("dragging");
-    card.removeAttribute("style");
-    list.insertBefore(card, placeholder);
+    // 行落回占位块的位置
+    row.classList.remove("dragging");
+    row.removeAttribute("style");
+    list.insertBefore(row, placeholder);
     placeholder.remove();
 
     await commitOrder();
     render(); // 补上拖拽期间被跳过的状态刷新
   }
 
-  /** 拖到视口上下边缘时滚动内容区 */
+  /** 拖到视口上下边缘时滚动内容区；上沿要避开固定在顶部的标题 + tab 栏 */
   function autoScroll(y) {
     const scroller = root.closest(".content") || root.parentElement;
     if (!scroller) return;
     const r = scroller.getBoundingClientRect();
-    if (y < r.top + 60) scroller.scrollTop -= 12;
+    const top = r.top + header.offsetHeight;
+    if (y < top + 40) scroller.scrollTop -= 12;
     else if (y > r.bottom - 60) scroller.scrollTop += 12;
   }
 
-  /** 找出应排在指针位置之后的那张卡片（网格布局：先比较行，再比较列） */
-  function cardAfterPoint(x, y) {
-    for (const c of list.querySelectorAll(".card")) {
-      const r = c.getBoundingClientRect();
-      if (y < r.top) return c; // 指针在这张卡片所在行之上
-      if (y <= r.bottom && x < r.left + r.width / 2) return c; // 同一行且在左半边
+  /** 找出应排在指针位置之后的那一行：指针在某行上半部分之上即插到它前面 */
+  function rowAfterPoint(y) {
+    for (const r of list.querySelectorAll(".prow")) {
+      const b = r.getBoundingClientRect();
+      if (y < b.top + b.height / 2) return r;
     }
     return null;
   }
 
-  // 把当前 DOM 顺序同步回内存并持久化
+  // 把当前 DOM 顺序同步回内存并持久化。
+  // 列表可能只是某个 tab 的子集：让这些项目依次回填它们原来占的位置，其余项目纹丝不动。
   async function commitOrder() {
-    const ids = [...list.querySelectorAll(".card")].map((c) => c.dataset.id);
+    const ids = [...list.querySelectorAll(".prow")].map((r) => r.dataset.id);
     const byId = new Map(projects.map((p) => [p.id, p]));
-    const next = ids.map((id) => byId.get(id)).filter(Boolean);
-    if (next.length !== projects.length) return; // 顺序异常时放弃，等下次刷新纠正
+    const visible = new Set(ids);
+    const queue = ids.map((id) => byId.get(id));
+    if (queue.some((p) => !p)) return; // 顺序异常时放弃，等下次刷新纠正
+    const next = projects.map((p) => (visible.has(p.id) ? queue.shift() : p));
     if (next.every((p, i) => p.id === projects[i].id)) return; // 顺序没变
     projects = next;
     try {
-      await api.reorderProjects(ids);
+      await api.reorderProjects(next.map((p) => p.id));
     } catch (e) {
       toast(String(e), "error");
       await refresh();
     }
   }
 
+  // ---------- 数据与渲染 ----------
+
   async function refresh() {
-    projects = await api.listProjects();
+    [projects, groups] = await Promise.all([api.listProjects(), api.listProjectGroups()]);
     try {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
     } catch (e) {
       statuses = {};
     }
+    renderTabs();
     render();
   }
 
   function render() {
     if (drag) return; // 拖拽过程中不重建 DOM，避免打断
     list.innerHTML = "";
-    if (projects.length === 0) {
-      list.append(el("div", { class: "empty" }, "还没有项目。点击右上角「新增项目」注册你的第一个项目。"));
+    const rows = visibleProjects();
+    thead.style.display = rows.length ? "" : "none";
+    if (rows.length === 0) {
+      list.append(el("div", { class: "empty" }, projects.length === 0
+        ? "还没有项目。点击右上角「新增项目」注册你的第一个项目。"
+        : "这个分组下还没有项目。点右上角「新增项目」，或编辑已有项目并把它移到这里。"));
       return;
     }
-    for (const p of projects) {
-      list.append(projectCard(p, statuses[p.id]));
+    for (const p of rows) {
+      list.append(projectRow(p, statuses[p.id]));
     }
   }
 
-  function projectCard(p, st) {
+  function projectRow(p, st) {
     const running = st?.running;
     const dot = el("span", { class: `dot ${running ? "on" : "off"}` });
     const kindBadge = el("span", { class: `badge badge-${p.kind}` }, kindLabel(p.kind));
 
-    const meta = [];
-    if (p.port != null) {
-      const up = st?.port_up;
-      meta.push(el("span", { class: "meta" }, `:${p.port} ${up ? "🟢" : "⚪"}`));
-    }
-    if (running) {
-      meta.push(el("span", { class: "meta" }, `PID ${st.pid}`));
-      meta.push(el("span", { class: "meta" }, `CPU ${(st.cpu ?? 0).toFixed(0)}%`));
-      meta.push(el("span", { class: "meta" }, `${st.memory_mb ?? 0}MB`));
-      meta.push(el("span", { class: "meta" }, fmtUptime(st.uptime_secs)));
-    }
+    // 「全部」tab 里额外标出所属分组，方便辨认
+    const groupBadge = activeTab === TAB_ALL && p.group ? el("span", { class: "badge badge-group", title: "所属项目组" }, `# ${p.group}`) : null;
 
-    const runBtns = starting.has(p.id)
-      ? [el("button", { class: "run-btn", disabled: "disabled" }, "⏳ 启动中…")]
-      : running
-      ? [
-          el("button", { class: "danger-btn", onclick: () => act(api.stopProject(p.id), "已停止") }, "■ 停止"),
-          el("button", { class: "ghost-btn", onclick: () => launch(p, api.restartProject) }, "↻ 重启"),
-        ]
-      : [el("button", { class: "run-btn", onclick: () => launch(p, api.startProject) }, "▶ 启动")];
-
-    const quick = el("div", { class: "quick-actions" }, [
-      iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
-      p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
-      iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
-      iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
-      iconBtn("logsView", "查看日志", () => openLogModal(p)), // 进程退出后日志仍保留，便于排查启动失败
-      el("span", { class: "quick-spacer" }),
-      iconBtn("edit", "编辑", () => openEditor(p)),
-      iconBtn("trash", "删除", () => removeProject(p), "danger"),
+    const nameCell = el("div", { class: "name-cell" }, [
+      el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
+      el("div", { class: "sub-line" }, [groupBadge, el("span", { class: "row-path", title: p.path }, p.path)]),
     ]);
 
-    const cmd = el("div", { class: "card-cmd" }, [
+    const cmdCell = el("div", { class: "cmd-cell", title: p.start_command }, [
       el("span", { class: "cmd-prompt" }, "$"),
       el("code", {}, p.start_command),
     ]);
 
-    // 拖拽手柄：按下即拖；卡片其它空白处也可拖，见 armDrag
+    const portCell = el("div", { class: "port-cell" },
+      p.port != null ? `:${p.port} ${st?.port_up ? "🟢" : "⚪"}` : "—");
+
+    const metaCell = el("div", { class: "meta-cell" }, running
+      ? [
+          el("span", { title: `PID ${st.pid}` }, `PID ${st.pid} · ${fmtUptime(st.uptime_secs)}`),
+          el("span", {}, `CPU ${(st.cpu ?? 0).toFixed(0)}% · ${st.memory_mb ?? 0}MB`),
+        ]
+      : el("span", { class: "dim" }, "未运行"));
+
+    const runBtns = starting.has(p.id)
+      ? [el("button", { class: "run-btn sm", disabled: "disabled" }, "⏳ 启动中…")]
+      : running
+      ? [
+          el("button", { class: "danger-btn sm", onclick: () => act(api.stopProject(p.id), "已停止") }, "■ 停止"),
+          el("button", { class: "ghost-btn sm", onclick: () => launch(p, api.restartProject) }, "↻ 重启"),
+        ]
+      : [el("button", { class: "run-btn sm", onclick: () => launch(p, api.startProject) }, "▶ 启动")];
+
+    // 操作列：生命周期按钮 + 快捷入口 + 编辑 / 删除
+    const actions = el("div", { class: "actions-cell" }, [
+      el("div", { class: "run-group" }, runBtns),
+      el("div", { class: "quick-group" }, [
+        iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
+        p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
+        iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
+        iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
+        iconBtn("logsView", "查看日志", () => openLogModal(p)), // 进程退出后日志仍保留，便于排查启动失败
+        iconBtn("edit", "编辑", () => openEditor(p)),
+        iconBtn("trash", "删除", () => removeProject(p), "danger"),
+      ]),
+    ]);
+
+    // 拖拽手柄：按下即拖；行上其它空白处也可拖，见 armDrag
     const handle = el("span", { class: "drag-handle", title: "拖动调整排序" });
     handle.append(icon("grip", 16));
 
-    const card = el("div", { class: "card", "data-id": p.id }, [
-      el("div", { class: "card-top" }, [handle, dot, el("span", { class: "card-title" }, p.name), kindBadge]),
-      el("div", { class: "card-path", title: p.path }, p.path),
-      cmd,
-      el("div", { class: "card-meta" }, meta),
-      el("div", { class: "card-actions" }, [...runBtns]),
-      quick,
-    ]);
+    const row = el("div", { class: "prow", "data-id": p.id }, [handle, nameCell, cmdCell, portCell, metaCell, actions]);
 
-    handle.addEventListener("pointerdown", (e) => startDrag(card, e));
-    card.addEventListener("pointerdown", (e) => {
-      if (!handle.contains(e.target)) armDrag(card, e);
+    handle.addEventListener("pointerdown", (e) => startDrag(row, e));
+    row.addEventListener("pointerdown", (e) => {
+      if (!handle.contains(e.target)) armDrag(row, e);
     });
 
-    return card;
+    return row;
   }
 
   // 启动 / 重启并反馈结果：成功、成功但有提醒、失败（含原因）。
-  // 后端会等到端口就绪或进程提前退出才返回，期间卡片显示「启动中…」。
+  // 后端会等到端口就绪或进程提前退出才返回，期间行内显示「启动中…」。
   async function launch(p, fn) {
     starting.add(p.id);
     render();
+    renderGroupTools();
     try {
       const out = await fn(p.id);
       toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
@@ -290,7 +472,9 @@ export function mount(root) {
     const isNew = !p;
     const data = p
       ? { ...p, env: p.env || {} }
-      : { id: "", name: "", path: "", kind: "frontend", start_command: "", stop_command: "", port: "", url: "", editor: "code", auto_restart: false, env: {} };
+      : { id: "", name: "", path: "", kind: "frontend", start_command: "", stop_command: "", port: "", url: "", editor: "code", auto_restart: false, env: {},
+        // 在某个分组 tab 里新增时，默认放进该分组
+        group: groups.includes(activeTab) ? activeTab : null };
 
     const f = (name, label, placeholder = "", type = "text") =>
       el("label", { class: "form-row" }, [
@@ -301,6 +485,11 @@ export function mount(root) {
     const kindSel = el("select", { name: "kind" }, ["frontend", "backend", "other"].map((k) =>
       el("option", { value: k, selected: data.kind === k ? "selected" : false }, kindLabel(k))
     ));
+
+    const groupSel = el("select", { name: "group" }, [
+      el("option", { value: "" }, "未分组"),
+      ...groups.map((g) => el("option", { value: g, selected: data.group === g ? "selected" : false }, g)),
+    ]);
 
     const autoRestart = el("input", { type: "checkbox", name: "auto_restart" });
     if (data.auto_restart) autoRestart.checked = true;
@@ -349,6 +538,7 @@ export function mount(root) {
       f("name", "名称", "我的前端"),
       pathRow,
       el("label", { class: "form-row" }, [el("span", {}, "类型"), kindSel]),
+      el("label", { class: "form-row" }, [el("span", {}, "所属项目组"), groupSel]),
       cmdRow,
       f("stop_command", "停止命令(可选)", "留空则由 DevBox 结束进程树"),
       f("port", "端口(可选)", "3000", "number"),
@@ -400,6 +590,7 @@ export function mount(root) {
         name: get("name"),
         path: get("path"),
         kind: kindSel.value,
+        group: groupSel.value || null,
         start_command: get("start_command"),
         stop_command: get("stop_command") || null,
         port: get("port") ? Number(get("port")) : null,
@@ -424,6 +615,7 @@ export function mount(root) {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
       render();
+      renderGroupTools(); // 批量按钮的可用状态随运行状态变化
       await api.healthTick();
     } catch (_) {}
   }, 2500);

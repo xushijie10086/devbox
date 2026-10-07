@@ -47,12 +47,13 @@ body { background: var(--bg); color: var(--text); font-size: 14px; }
 .content { flex: 1; overflow-y: auto; padding: 22px 26px; }
 .view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
 .view-header h1 { font-size: 20px; margin: 0; }
-/* 标题行固定在内容区顶部，不随列表滚动：负 margin 抵消 .content 的内边距，让背景铺满 */
-.view-header.sticky-header {
+/* 标题行 + tab 栏固定在内容区顶部，不随列表滚动：负 margin 抵消 .content 的内边距，让背景铺满 */
+.sticky-header {
   position: sticky; top: -22px; z-index: 20;
-  margin: -22px -26px 18px; padding: 22px 26px 14px;
+  margin: -22px -26px 16px; padding: 22px 26px 0;
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
+.sticky-header .view-header { margin-bottom: 12px; }
 .header-tools { display: flex; gap: 8px; align-items: center; }
 .sub { color: var(--dim); font-size: 13px; margin: 22px 0 8px; }
 .note { color: var(--dim); font-size: 12.5px; margin-bottom: 14px; line-height: 1.5; }
@@ -80,8 +81,7 @@ button { font-family: inherit; }
 
 /* 卡片 */
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 8px; cursor: grab; }
-.card-cmd { cursor: text; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .card-top { display: flex; align-items: center; gap: 8px; }
 .card-title { font-weight: 600; font-size: 15px; flex: 1; }
 .card-path { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -104,17 +104,6 @@ button { font-family: inherit; }
 .drag-handle:hover { color: var(--text); background: var(--panel-2); }
 .drag-handle:active { cursor: grabbing; }
 
-/* 拖拽中的卡片脱离网格，用 fixed 跟随指针 */
-.card.dragging {
-  position: fixed; z-index: 400; margin: 0; pointer-events: none;
-  border-color: var(--accent); box-shadow: 0 16px 40px rgba(0,0,0,.55);
-  cursor: grabbing;
-}
-/* 原位占位块，指示松手后会落到哪里 */
-.card-placeholder {
-  border: 1.5px dashed var(--accent); border-radius: var(--radius);
-  background: rgba(79,140,255,.07);
-}
 body.dragging-active { cursor: grabbing; user-select: none; }
 
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 5px; }
@@ -244,3 +233,73 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .toast-error { background: var(--red); }
 .toast-warning { background: #b7791f; }
 .run-btn:disabled, .ghost-btn:disabled { opacity: .6; cursor: progress; }
+
+/* ---- 项目库：tab 分组 ---- */
+.tabs-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.tabs { display: flex; align-items: flex-end; gap: 2px; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 8px 14px 9px; margin-bottom: -1px; cursor: pointer; font-size: 13.5px;
+  background: transparent; color: var(--dim); border: none; border-bottom: 2px solid transparent;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-count { font-size: 11px; padding: 0 6px; border-radius: 10px; background: var(--panel-2); color: var(--dim); }
+.tab.active .tab-count { background: rgba(79,140,255,.18); color: #7fb0ff; }
+.tab-add { padding: 8px 12px 9px; font-size: 15px; }
+.group-tools { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; flex-shrink: 0; }
+.tools-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.danger-btn:disabled, .group-tools button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---- 项目库：列表 ---- */
+.ptable { overflow: visible; }
+.prow {
+  display: grid; align-items: center; gap: 10px; padding: 9px 12px 9px 8px;
+  grid-template-columns: 22px minmax(160px, 1.7fr) minmax(90px, .9fr) 70px minmax(88px, .5fr) 330px; /* 末列定宽，各行才能对齐 */
+  border-bottom: 1px solid var(--border); background: transparent; cursor: grab;
+}
+.plist .prow:last-child { border-bottom: none; }
+.plist .prow:hover { background: var(--panel); }
+.prow-head { cursor: default; font-size: 12px; color: var(--dim); padding-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.prow-head:hover { background: transparent; }
+.prow-head .head-actions { text-align: right; padding-right: 6px; }
+.name-cell { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.name-line .dot { margin-right: 0; flex-shrink: 0; }
+.row-title { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name-line .badge { flex-shrink: 0; }
+.sub-line { display: flex; align-items: center; gap: 6px; min-width: 0; padding-left: 15px; }
+.row-path { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.badge-group { flex-shrink: 0; font-size: 10.5px; padding: 0 7px; background: transparent; border: 1px solid var(--border); color: var(--dim); }
+.cmd-cell {
+  display: flex; align-items: center; gap: 6px; min-width: 0; cursor: text;
+  background: #0b0d11; border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  font-size: 12px; font-family: "SF Mono", ui-monospace, monospace;
+}
+.cmd-cell code { color: #a9d0ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.port-cell { font-size: 12.5px; color: var(--dim); font-family: "SF Mono", ui-monospace, monospace; white-space: nowrap; }
+.meta-cell { display: flex; flex-direction: column; gap: 1px; font-size: 11.5px; color: var(--dim); white-space: nowrap; }
+.actions-cell { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.run-group { display: flex; gap: 5px; min-width: 124px; justify-content: flex-end; }
+.quick-group { display: flex; align-items: center; gap: 1px; }
+.prow .icon-btn { width: 28px; height: 28px; }
+.prow button { cursor: pointer; }
+.prow button:disabled { cursor: progress; }
+
+/* 拖拽中的行脱离列表，用 fixed 跟随指针 */
+.prow.dragging {
+  position: fixed; z-index: 400; margin: 0; pointer-events: none; cursor: grabbing;
+  background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius);
+  box-shadow: 0 16px 40px rgba(0,0,0,.55);
+}
+/* 原位占位块，指示松手后会落到哪里 */
+.row-placeholder { border: 1.5px dashed var(--accent); border-radius: 8px; background: rgba(79,140,255,.07); margin: 2px 6px; }
+
+/* 窄窗口：隐藏运行详情列，操作列改成上下两排，保证按钮完整可见 */
+@media (max-width: 1090px) {
+  .prow { grid-template-columns: 22px minmax(130px, 1.4fr) minmax(80px, .9fr) 66px 204px; }
+  .prow > .meta-cell { display: none; }
+  .actions-cell { flex-direction: column; align-items: flex-end; gap: 3px; }
+  .run-group { min-width: 0; }
+}

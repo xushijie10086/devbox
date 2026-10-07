@@ -24,6 +24,10 @@ pub fn run() {
             commands::projects::save_project,
             commands::projects::delete_project,
             commands::projects::reorder_projects,
+            commands::projects::list_project_groups,
+            commands::projects::add_project_group,
+            commands::projects::rename_project_group,
+            commands::projects::delete_project_group,
             commands::projects::detect_project,
             commands::projects::pick_directory,
             // process
