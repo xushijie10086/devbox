@@ -163,6 +163,14 @@ fn route(state: &AppState, method: &Method, path: &str, body: &str) -> Value {
             None => err("缺少参数 path"),
         },
 
+        "/projects/start-commands" => match arg.get("path").and_then(|v| v.as_str()) {
+            Some(p) => match crate::commands::startcmd::detect_start_commands(p.to_string()) {
+                Ok(c) => ok(json!(c)),
+                Err(e) => err(&e),
+            },
+            None => err("缺少参数 path"),
+        },
+
         _ => err(&format!("未知接口: {path}")),
     }
 }

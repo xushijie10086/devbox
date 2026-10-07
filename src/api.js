@@ -12,6 +12,7 @@ export const api = {
   renameProjectGroup: (oldName, newName) => invoke("rename_project_group", { oldName, newName }),
   deleteProjectGroup: (name) => invoke("delete_project_group", { name }),
   detectProject: (path) => invoke("detect_project", { path }),
+  detectStartCommands: (path) => invoke("detect_start_commands", { path }),
   pickDirectory: () => invoke("pick_directory"),
 
   // 进程 / 生命周期

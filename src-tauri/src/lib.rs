@@ -46,6 +46,7 @@ pub fn run() {
             commands::projects::rename_project_group,
             commands::projects::delete_project_group,
             commands::projects::detect_project,
+            commands::startcmd::detect_start_commands,
             commands::projects::pick_directory,
             // process
             commands::process::start_project,

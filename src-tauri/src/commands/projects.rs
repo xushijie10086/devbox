@@ -295,31 +295,6 @@ fn detect_in(dir: &Path, installed: &crate::commands::runtime::Runtimes) -> Resu
                     d.name = Some(name.to_string());
                 }
             }
-            // 选一个启动脚本
-            let mut script: Option<String> = None;
-            if let Some(scripts) = json.get("scripts").and_then(|v| v.as_object()) {
-                for k in ["dev", "serve", "start", "dev:web", "dev:h5"] {
-                    if scripts.contains_key(k) {
-                        script = Some(k.to_string());
-                        break;
-                    }
-                }
-            }
-            // 判定包管理器
-            let pm = if dir.join("pnpm-lock.yaml").exists() {
-                "pnpm"
-            } else if dir.join("yarn.lock").exists() {
-                "yarn"
-            } else {
-                "npm"
-            };
-            if let Some(sc) = script {
-                d.start_command = Some(if pm == "npm" {
-                    format!("npm run {}", sc)
-                } else {
-                    format!("{} {}", pm, sc)
-                });
-            }
             // 后端型 node（express/nest/koa）粗判
             let deps_has = |name: &str| -> bool {
                 json.get("dependencies")
@@ -349,7 +324,6 @@ fn detect_in(dir: &Path, installed: &crate::commands::runtime::Runtimes) -> Resu
         if let Some(a) = extract_pom_artifact(&pom) {
             d.name = Some(a);
         }
-        d.start_command = Some("mvn spring-boot:run".into());
         for cfg in [
             "src/main/resources/application.yml",
             "src/main/resources/application.yaml",
@@ -371,20 +345,20 @@ fn detect_in(dir: &Path, installed: &crate::commands::runtime::Runtimes) -> Resu
         if let Some(n) = extract_toml_name(&cargo) {
             d.name = Some(n);
         }
-        d.start_command = Some("cargo run".into());
     } else if read("go.mod").is_some() {
         hint = "go.mod".into();
         d.kind = Some("backend".into());
-        d.start_command = Some("go run .".into());
     } else if read("pyproject.toml").is_some() || read("requirements.txt").is_some() {
         hint = "Python 项目".into();
         d.kind = Some("backend".into());
         if dir.join("manage.py").exists() {
-            d.start_command = Some("python manage.py runserver".into());
             d.port = Some(8000);
             d.url = Some("http://localhost:8000".into());
         }
     }
+
+    // 启动命令取自动获取的首选项（候选列表见 startcmd.rs）
+    d.start_command = crate::commands::startcmd::start_candidates(dir).into_iter().next().map(|c| c.command);
 
     // 项目声明的 Node / JDK 版本，并在本机已安装的版本里匹配
     d.node = crate::commands::runtime::suggest_node(dir, &installed.node);
@@ -406,14 +380,7 @@ fn maven_notes(dir: &Path) -> Vec<String> {
     if !pom.contains("<modules>") || pom.contains("spring-boot-maven-plugin") {
         return vec![];
     }
-    let mut modules = Vec::new();
-    let mut rest = pom.as_str();
-    while let Some(i) = rest.find("<module>") {
-        let after = &rest[i + "<module>".len()..];
-        let Some(j) = after.find("</module>") else { break };
-        modules.push(after[..j].trim().to_string());
-        rest = &after[j..];
-    }
+    let modules = crate::commands::startcmd::maven_modules(&pom);
     let boot: Vec<&String> = modules
         .iter()
         .filter(|m| {
@@ -690,6 +657,22 @@ mod detect_runtime_tests {
         // 单模块 / 根 pom 自带插件：不打扰
         let d = dir("single", &[("pom.xml", "<project><artifactId>a</artifactId></project>")]);
         assert!(detect_in(&d, &installed()).unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn detect_uses_the_recommended_start_command() {
+        // 多模块 Maven：不能再给出会报 No plugin found 的根目录 spring-boot:run
+        let root = "<project><modules><module>admin</module></modules></project>";
+        let boot = "<project><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+        let d = dir("mm-cmd", &[("pom.xml", root), ("admin/pom.xml", boot)]);
+        let cmd = detect_in(&d, &installed()).unwrap().start_command.unwrap();
+        assert_eq!(cmd, "mvn -pl admin -am install -DskipTests && mvn -pl admin spring-boot:run");
+        // 前端项目：包管理器随锁文件，脚本按 dev > start 选
+        let d = dir("web-cmd", &[("package.json", r#"{"scripts":{"start":"x","dev":"vite"}}"#), ("pnpm-lock.yaml", "")]);
+        assert_eq!(detect_in(&d, &installed()).unwrap().start_command.as_deref(), Some("pnpm dev"));
+        // 什么都认不出：不乱填
+        let d = dir("none-cmd", &[("README.md", "hi")]);
+        assert!(detect_in(&d, &installed()).unwrap().start_command.is_none());
     }
 
     // ---------- 启动依赖 ----------

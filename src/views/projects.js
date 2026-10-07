@@ -1023,10 +1023,64 @@ export function mount(root) {
 
     // 启动命令：终端命令行风格，可多行换行
     const cmdInput = el("textarea", { name: "start_command", class: "cmd-field", rows: "2", placeholder: "npm run dev" }, data.start_command ?? "");
-    const cmdRow = el("label", { class: "form-row" }, [
-      el("span", {}, "启动命令"),
+    const cmdBtn = el("button", { class: "detect-btn", type: "button", title: "读取工作目录里的配置文件，列出可用的启动命令" });
+    cmdBtn.append(icon("magic", 15), el("span", {}, "获取启动命令"));
+    const candBox = el("div", { class: "cand-box" });
+    candBox.style.display = "none";
+    const cmdRow = el("div", { class: "form-row" }, [
+      el("div", { class: "cmd-head" }, [el("span", {}, "启动命令"), cmdBtn]),
       el("div", { class: "cmd-input" }, [el("span", { class: "cmd-prompt" }, "$"), cmdInput]),
+      candBox,
     ]);
+
+    // 「获取启动命令」：列出识别到的候选，点一下填进输入框；输入框是空的就先填推荐项
+    let mark = () => {};
+    cmdInput.addEventListener("input", () => mark()); // 只绑定一次；mark 随每次获取的结果更新
+    const showCandidates = (list) => {
+      candBox.replaceChildren();
+      if (!list.length) {
+        candBox.style.display = "none";
+        toast("没有从目录里识别出启动命令，请手动填写", "warning");
+        return;
+      }
+      const filled = !cmdInput.value.trim();
+      if (filled) cmdInput.value = list[0].command;
+      const items = list.map((c) => {
+        const item = el("div", { class: "cand-item", title: "点击使用这条命令" }, [
+          el("code", { class: "cand-cmd" }, c.command),
+          el("div", { class: "cand-meta" }, [el("b", {}, c.label), el("span", {}, c.source), c.note ? el("span", { class: "cand-note" }, c.note) : null]),
+        ]);
+        item.onclick = () => {
+          cmdInput.value = c.command;
+          mark();
+        };
+        return { c, item };
+      });
+      mark = () => items.forEach(({ c, item }) => item.classList.toggle("active", c.command === cmdInput.value.trim()));
+      mark();
+      candBox.append(
+        el("div", { class: "cand-head" }, filled
+          ? `识别到 ${list.length} 个，已填入推荐的第一个；点击下面任意一条可更换`
+          : `识别到 ${list.length} 个；当前命令没有改动，点击下面任意一条可替换`),
+        ...items.map((x) => x.item)
+      );
+      candBox.style.display = "";
+    };
+    cmdBtn.onclick = async () => {
+      const path = pathInput.value.trim();
+      if (!path) {
+        toast("请先填写工作目录", "error");
+        return;
+      }
+      cmdBtn.disabled = true;
+      try {
+        showCandidates(await api.detectStartCommands(path));
+      } catch (e) {
+        toast(String(e), "error");
+      } finally {
+        cmdBtn.disabled = false;
+      }
+    };
 
     const form = el("div", { class: "form" }, [
       f("name", "名称", "我的前端"),
