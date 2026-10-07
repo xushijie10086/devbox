@@ -509,7 +509,7 @@ fn version_key(v: &str) -> Vec<u64> {
 }
 
 fn sort_desc(list: &mut [RuntimeVersion]) {
-    list.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)));
+    list.sort_by_key(|v| std::cmp::Reverse(version_key(&v.version)));
 }
 
 #[cfg(test)]

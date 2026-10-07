@@ -353,7 +353,7 @@ mod tests {
     }
 
     fn listen_in_child(port: u16) -> std::process::Child {
-        let c = Command::new("python3")
+        let mut c = Command::new("python3")
             .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -365,6 +365,8 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        let _ = c.kill();
+        let _ = c.wait(); // 起不来也别留下僵尸进程
         panic!("测试用的监听进程没起来");
     }
 

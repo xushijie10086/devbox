@@ -1,5 +1,7 @@
 # DevBox · 本地开发工具箱
 
+[![CI](https://github.com/xushijie10086/devbox/actions/workflows/ci.yml/badge.svg)](https://github.com/xushijie10086/devbox/actions/workflows/ci.yml)
+
 一个面向 macOS 的本地开发辅助桌面应用，用 **Tauri 2 (Rust) + 原生 JS 前端** 构建。集中管理本机的开发项目、端口、hosts 与本地服务，一键启停。
 
 ## 功能
@@ -55,6 +57,23 @@ npm run tauri dev
 ```bash
 npm run tauri build
 # 产物在 src-tauri/target/release/bundle/
+```
+
+## 持续集成（CI）
+
+`.github/workflows/ci.yml`，推送到 `main` 和每个 Pull Request 都会跑，也可以在 Actions 页面手动运行：
+
+| 任务 | 内容 |
+|---|---|
+| 前端测试与构建 | `npm test`（含 tauri crate 与 npm 包版本一致性检查）、`npm run build`、MCP 适配器语法检查 |
+| Rust（macOS + Linux） | `cargo clippy -D warnings`、`cargo test --lib`（都带 `--locked`，`Cargo.lock` 不同步会失败） |
+| 应用构建（macOS） | `tauri build --debug --no-bundle`，验证前端和 Rust 能一起构建 |
+
+Rust 版本固定在工作流顶部的 `RUST_TOOLCHAIN`，避免新版本 clippy 新增规则让 CI 无故变红；升级时改这一处，并在本地先跑 `cargo clippy --all-targets -- -D warnings`。本地提交前可以直接跑：
+
+```bash
+npm test
+cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test --lib
 ```
 
 ## 依赖版本约定

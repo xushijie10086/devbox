@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -196,7 +196,7 @@ impl LogStore {
     }
 }
 
-fn rotated_path(path: &PathBuf) -> PathBuf {
+fn rotated_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".1");
     PathBuf::from(s)

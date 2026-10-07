@@ -247,7 +247,7 @@ mod tests {
     }
 
     fn alive(pid: u32) -> bool {
-        std::process::Command::new("kill").args(["-0", &pid.to_string()]).output().map_or(false, |o| o.status.success())
+        std::process::Command::new("kill").args(["-0", &pid.to_string()]).output().is_ok_and(|o| o.status.success())
     }
 
     #[test]

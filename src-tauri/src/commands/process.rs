@@ -84,7 +84,7 @@ pub fn compute_statuses(state: &AppState) -> Vec<ProjectStatus> {
                 None => (None, None),
             };
 
-            let port_up = p.port.map(|port| port_is_listening(port));
+            let port_up = p.port.map(port_is_listening);
 
             ProjectStatus {
                 id: p.id.clone(),

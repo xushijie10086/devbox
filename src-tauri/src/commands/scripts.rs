@@ -108,7 +108,7 @@ pub fn detect_scripts(dir: &Path) -> Vec<ScriptEntry> {
     if dir.join("requirements.txt").exists() {
         out.push(entry("安装依赖", "pip install -r requirements.txt", "Python", None));
     }
-    if read("pyproject.toml").map_or(false, |t| t.contains("[tool.poetry]")) {
+    if read("pyproject.toml").is_some_and(|t| t.contains("[tool.poetry]")) {
         out.push(entry("安装依赖", "poetry install", "Python", None));
     }
     if dir.join("pytest.ini").exists() || dir.join("tests").is_dir() && dir.join("requirements.txt").exists() {
@@ -226,7 +226,7 @@ pub fn run_script_blocking(state: &AppState, id: &str, command: &str, label: &st
     let status = child.wait();
     let secs = started.elapsed().as_secs_f32();
     std::thread::sleep(Duration::from_millis(250)); // 等读线程把最后的输出写进日志
-    let cancelled = state.jobs.lock().unwrap().remove(id).map_or(false, |j| j.cancelled);
+    let cancelled = state.jobs.lock().unwrap().remove(id).is_some_and(|j| j.cancelled);
 
     // (返回给前端的结果, 要发的系统通知)。用户主动取消不通知
     let (outcome, notice): (Result<StartOutcome, String>, Option<(String, String)>) = match status {

@@ -384,7 +384,7 @@ fn maven_notes(dir: &Path) -> Vec<String> {
     let boot: Vec<&String> = modules
         .iter()
         .filter(|m| {
-            fs::read_to_string(dir.join(m).join("pom.xml")).map_or(false, |p| p.contains("spring-boot-maven-plugin"))
+            fs::read_to_string(dir.join(m).join("pom.xml")).is_ok_and(|p| p.contains("spring-boot-maven-plugin"))
         })
         .collect();
     let head = "这是多模块 Maven 项目，根目录没有 spring-boot 插件，直接 mvn spring-boot:run 会报 No plugin found for prefix 'spring-boot'。";

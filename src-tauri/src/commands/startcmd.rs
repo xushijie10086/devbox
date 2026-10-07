@@ -170,7 +170,7 @@ fn maven(dir: &Path, out: &mut Vec<StartCandidate>) {
 
     // 多模块：根目录没有插件，直接 spring-boot:run 会报 No plugin found for prefix 'spring-boot'，
     // 要指定带插件的子模块；它依赖的兄弟模块必须已经安装到本地仓库
-    let boots: Vec<&String> = modules.iter().filter(|m| rd(&dir.join(m), "pom.xml").map_or(false, |p| boot(&p))).collect();
+    let boots: Vec<&String> = modules.iter().filter(|m| rd(&dir.join(m), "pom.xml").is_some_and(|p| boot(&p))).collect();
     if boots.is_empty() {
         out.push(cand(
             format!("{mvn} spring-boot:run"),
@@ -255,7 +255,7 @@ fn has_go_main(dir: &Path) -> bool {
         let name = e.file_name().to_string_lossy().to_string();
         name.ends_with(".go")
             && !name.ends_with("_test.go")
-            && fs::read_to_string(e.path()).map_or(false, |t| t.lines().any(|l| l.trim() == "package main"))
+            && fs::read_to_string(e.path()).is_ok_and(|t| t.lines().any(|l| l.trim() == "package main"))
     })
 }
 
@@ -380,7 +380,7 @@ fn procfile(dir: &Path, out: &mut Vec<StartCandidate>) {
 fn makefile(dir: &Path, out: &mut Vec<StartCandidate>) {
     let Some(mk) = rd(dir, "Makefile") else { return };
     for t in ["run", "dev", "start", "serve", "up", "watch"] {
-        if mk.lines().any(|l| l.split_once(':').map_or(false, |(a, b)| a == t && !b.starts_with('='))) {
+        if mk.lines().any(|l| l.split_once(':').is_some_and(|(a, b)| a == t && !b.starts_with('='))) {
             out.push(cand(format!("make {t}"), format!("make {t}"), "Makefile", None));
         }
     }

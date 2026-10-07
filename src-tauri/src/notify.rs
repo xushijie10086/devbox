@@ -59,7 +59,7 @@ pub fn enabled(state: &AppState) -> bool {
 
 fn window_focused(app: &AppHandle) -> bool {
     app.get_webview_window("main")
-        .map_or(false, |w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
 }
 
 /// 发系统通知。force 为 true 时不管窗口是否在前台（用于托盘里的操作反馈：
