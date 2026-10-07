@@ -56,11 +56,16 @@ npm run tauri build
 # 产物在 src-tauri/target/release/bundle/
 ```
 
+## 依赖版本约定
+
+Rust 的 `tauri` crate 与前端的 `@tauri-apps/api`、`@tauri-apps/cli` 必须是同一个「主.次」版本，否则 `tauri dev` 启动会报 `version mismatched Tauri packages`。两边都用 `~2.12` 锁定了次版本；要升级时一起改（`cargo update -p tauri` 同时 `npm install @tauri-apps/api@~X.Y @tauri-apps/cli@~X.Y`），`npm test` 会在漂移时直接报错并给出修复命令。
+
 ## 测试
 
 ```bash
 cd src-tauri && cargo test --lib   # 后端单元测试（含真实 git 仓库、真实 shell 进程、lsof）
-npm test                           # 前端纯逻辑测试（日志的 ANSI 解析 / 级别识别 / 搜索过滤）
+npm test                           # 前端纯逻辑测试（日志的 ANSI 解析 / 级别识别 / 搜索过滤），
+                                   # 并检查 Rust 的 tauri crate 与 @tauri-apps/api / cli 的主.次版本一致
 ```
 
 ## macOS 权限说明
