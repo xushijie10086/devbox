@@ -74,6 +74,23 @@ pub struct DetectedProject {
     pub url: Option<String>,
     /// 面向用户的简短说明，例如"已根据 package.json 自动填充"
     pub summary: String,
+    /// 项目声明的 Node 版本要求，以及本机能否满足
+    pub node: Option<RuntimeSuggestion>,
+    /// 项目声明的 JDK 版本要求，以及本机能否满足
+    pub java: Option<RuntimeSuggestion>,
+    /// 需要提醒用户注意的事项（如多模块 Maven 项目的启动目录）
+    pub notes: Vec<String>,
+}
+
+/// 项目对运行时版本的要求，以及在本机已安装版本里匹配到的结果
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct RuntimeSuggestion {
+    /// 项目声明的要求原文，如 "20"、">=18"、"1.8"
+    pub wanted: String,
+    /// 来自哪个文件，如 ".nvmrc"、"pom.xml"
+    pub source: String,
+    /// 本机匹配到的版本；None 表示本机没有满足要求的版本
+    pub matched: Option<RuntimeChoice>,
 }
 
 /// 项目的运行时状态

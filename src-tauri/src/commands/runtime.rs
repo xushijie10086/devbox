@@ -26,6 +26,10 @@ pub struct Runtimes {
 /// 列出本机已安装的 Node / JDK 版本（新版本在前）
 #[tauri::command(async)]
 pub fn list_runtimes() -> Runtimes {
+    installed()
+}
+
+pub fn installed() -> Runtimes {
     let home = dirs::home_dir().unwrap_or_default();
     let mut node = scan_node(&home);
     for v in scan_brew_node() {
@@ -230,6 +234,257 @@ fn read_release(java_home: &Path, fallback: &str) -> (String, Option<String>) {
     )
 }
 
+// ---------- 识别项目要求的版本 ----------
+
+/// 项目声明的版本要求
+#[derive(Debug, PartialEq, Clone)]
+pub struct Requirement {
+    pub wanted: String,
+    pub source: String,
+}
+
+fn read_text(dir: &Path, file: &str) -> Option<String> {
+    std::fs::read_to_string(dir.join(file)).ok()
+}
+
+/// 读取 Node 版本要求，优先级：.nvmrc > .node-version > .tool-versions > package.json(volta / engines)
+pub fn node_requirement(dir: &Path) -> Option<Requirement> {
+    let clean = |raw: &str| -> Option<String> {
+        let t = raw.trim().trim_start_matches('v').trim().to_string();
+        let lower = t.to_lowercase();
+        // lts/*、node、latest 之类没有具体版本号，无法据此选择
+        let vague = t.is_empty() || lower.starts_with("lts") || ["node", "latest", "stable", "current", "*", "x"].contains(&lower.as_str());
+        (!vague).then_some(t)
+    };
+    for file in [".nvmrc", ".node-version"] {
+        if let Some(w) = read_text(dir, file).and_then(|t| t.lines().next().and_then(&clean)) {
+            return Some(Requirement { wanted: w, source: file.into() });
+        }
+    }
+    if let Some(text) = read_text(dir, ".tool-versions") {
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            if matches!(it.next(), Some("nodejs") | Some("node")) {
+                if let Some(w) = it.next().and_then(&clean) {
+                    return Some(Requirement { wanted: w, source: ".tool-versions".into() });
+                }
+            }
+        }
+    }
+    if let Some(json) = read_text(dir, "package.json").and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        if let Some(w) = json.pointer("/volta/node").and_then(|v| v.as_str()).and_then(&clean) {
+            return Some(Requirement { wanted: w, source: "package.json (volta)".into() });
+        }
+        if let Some(w) = json.pointer("/engines/node").and_then(|v| v.as_str()).and_then(&clean) {
+            return Some(Requirement { wanted: w, source: "package.json (engines)".into() });
+        }
+    }
+    None
+}
+
+/// 读取 JDK 主版本要求，优先级：.sdkmanrc > .tool-versions > .java-version > pom.xml > Gradle
+pub fn java_requirement(dir: &Path) -> Option<Requirement> {
+    let found = |major: u32, src: &str| Some(Requirement { wanted: major.to_string(), source: src.into() });
+
+    if let Some(text) = read_text(dir, ".sdkmanrc") {
+        for line in text.lines() {
+            if let Some(v) = line.trim().strip_prefix("java=") {
+                if let Some(m) = java_major(v) {
+                    return found(m, ".sdkmanrc");
+                }
+            }
+        }
+    }
+    if let Some(text) = read_text(dir, ".tool-versions") {
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            if it.next() == Some("java") {
+                if let Some(m) = it.next().and_then(java_major) {
+                    return found(m, ".tool-versions");
+                }
+            }
+        }
+    }
+    if let Some(m) = read_text(dir, ".java-version").and_then(|t| t.lines().next().and_then(java_major)) {
+        return found(m, ".java-version");
+    }
+    if let Some(pom) = read_text(dir, "pom.xml") {
+        for tag in ["java.version", "maven.compiler.release", "maven.compiler.source", "jdk.version", "maven.compiler.target"] {
+            if let Some(m) = xml_tag(&pom, tag).as_deref().and_then(java_major) {
+                return found(m, "pom.xml");
+            }
+        }
+    }
+    for file in ["build.gradle", "build.gradle.kts"] {
+        if let Some(text) = read_text(dir, file) {
+            // JavaLanguageVersion.of(17) / jvmToolchain(17) / sourceCompatibility = '1.8' / JavaVersion.VERSION_1_8
+            for key in ["JavaLanguageVersion.of(", "jvmToolchain(", "sourceCompatibility", "targetCompatibility", "jvmTarget"] {
+                if let Some(i) = text.find(key) {
+                    let rest = &text[i + key.len()..];
+                    let rest = rest.split('\n').next().unwrap_or("");
+                    let rest = rest.replace("JavaVersion.VERSION_", "").replace('_', ".");
+                    // 数字前面还有 "= '" 之类的语法符号，截到第一个数字再解析
+                    let rest = rest.find(|c: char| c.is_ascii_digit()).map_or("", |i| &rest[i..]);
+                    if let Some(m) = java_major(rest) {
+                        return found(m, file);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn xml_tag(s: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let i = s.find(&open)? + open.len();
+    let j = s[i..].find(&format!("</{tag}>"))?;
+    Some(s[i..i + j].trim().to_string())
+}
+
+/// 把各种写法的 JDK 版本归一成主版本：1.8 → 8，17.0.9 → 17，corretto-8.402 → 8，temurin-17.0.9 → 17
+/// 找不到数字（如 ${java.version}）返回 None
+pub fn java_major(raw: &str) -> Option<u32> {
+    // 先去掉发行方名字：按 '-' 分段，取第一个以数字开头的段
+    //（openjdk64-17.0.1 里的 64 属于名字，不能当版本号）
+    let ver = raw.split('-').find(|seg| seg.starts_with(|c: char| c.is_ascii_digit()))?;
+    let nums: Vec<u32> = ver
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .take(2)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    match nums.as_slice() {
+        [1, minor, ..] => Some(*minor), // 旧式 1.8 / 1.7
+        [major, ..] => Some(*major),
+        [] => None,
+    }
+}
+
+// ---- 一个够用的 semver 范围匹配（engines.node 常见写法）----
+
+/// 解析 "20" / "20.11" / "20.11.0" / "18.x"；缺失或通配的部分为 None
+fn parse_partial(s: &str) -> Option<[Option<u64>; 3]> {
+    let s = s.trim().trim_start_matches('v');
+    if s.is_empty() {
+        return None;
+    }
+    let mut out = [None; 3];
+    for (i, part) in s.split('.').take(3).enumerate() {
+        let part = part.split(|c: char| !c.is_ascii_alphanumeric() && c != '*').next().unwrap_or("");
+        out[i] = match part {
+            "x" | "X" | "*" | "" => None,
+            p => Some(p.parse::<u64>().ok()?),
+        };
+    }
+    out[0]?; // 主版本必须是具体数字
+    Some(out)
+}
+
+fn full(v: &str) -> Option<[u64; 3]> {
+    let p = parse_partial(v)?;
+    Some([p[0]?, p[1].unwrap_or(0), p[2].unwrap_or(0)])
+}
+
+fn satisfies_comparator(ver: [u64; 3], comp: &str) -> bool {
+    let (op, rest) = ["<=", ">=", "<", ">", "=", "^", "~"]
+        .iter()
+        .find_map(|op| comp.strip_prefix(op).map(|r| (*op, r)))
+        .unwrap_or(("", comp));
+    let Some(p) = parse_partial(rest) else { return false };
+    let base = [p[0].unwrap_or(0), p[1].unwrap_or(0), p[2].unwrap_or(0)];
+    match op {
+        "" | "=" => (0..3).all(|i| p[i].map_or(true, |x| x == ver[i])),
+        ">=" => ver >= base,
+        // ">17" 表示 >=18；">17.2" 表示 >=17.3
+        ">" => match (p[1], p[2]) {
+            (None, _) => ver[0] > base[0],
+            (Some(_), None) => (ver[0], ver[1]) > (base[0], base[1]),
+            _ => ver > base,
+        },
+        "<" => ver < base,
+        "<=" => match (p[1], p[2]) {
+            (None, _) => ver[0] <= base[0],
+            (Some(_), None) => (ver[0], ver[1]) <= (base[0], base[1]),
+            _ => ver <= base,
+        },
+        "^" => {
+            ver >= base
+                && if base[0] > 0 {
+                    ver[0] == base[0]
+                } else if base[1] > 0 || p[1].is_some() {
+                    ver[0] == 0 && ver[1] == base[1]
+                } else {
+                    ver[0] == 0 && ver[1] == 0 && ver[2] == base[2]
+                }
+        }
+        "~" => ver >= base && ver[0] == base[0] && p[1].map_or(true, |m| ver[1] == m),
+        _ => false,
+    }
+}
+
+/// 版本是否满足范围，支持 `||`、空格分隔的与条件、连字符范围（16 - 20）
+pub fn version_satisfies(version: &str, spec: &str) -> bool {
+    let Some(ver) = full(version) else { return false };
+    spec.split("||").any(|group| {
+        // 先把 ">= 16" 这种操作符后带空格的写法并拢，并识别 "a - b"
+        let mut toks: Vec<String> = Vec::new();
+        for t in group.split_whitespace() {
+            match toks.last_mut() {
+                Some(last) if matches!(last.as_str(), ">=" | "<=" | ">" | "<" | "=" | "^" | "~") => last.push_str(t),
+                _ => toks.push(t.to_string()),
+            }
+        }
+        let mut comps: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < toks.len() {
+            if i + 2 < toks.len() && toks[i + 1] == "-" {
+                comps.push(format!(">={}", toks[i]));
+                comps.push(format!("<={}", toks[i + 2]));
+                i += 3;
+            } else {
+                comps.push(toks[i].clone());
+                i += 1;
+            }
+        }
+        !comps.is_empty() && comps.iter().all(|c| satisfies_comparator(ver, c))
+    })
+}
+
+/// 从本机已安装的 Node 里挑一个满足要求的：取「满足要求的最低主版本」（最保守，
+/// 老项目在高版本 Node 上常有兼容问题），同一主版本里取最新。
+pub fn pick_node(spec: &str, installed: &[RuntimeVersion]) -> Option<RuntimeVersion> {
+    let ok: Vec<&RuntimeVersion> = installed.iter().filter(|r| version_satisfies(&r.version, spec)).collect();
+    let low = ok.iter().filter_map(|r| version_key(&r.version).first().copied()).min()?;
+    ok.into_iter()
+        .filter(|r| version_key(&r.version).first().copied() == Some(low))
+        .max_by_key(|r| version_key(&r.version))
+        .cloned()
+}
+
+/// 从本机已安装的 JDK 里挑主版本一致的，同主版本取最新
+pub fn pick_java(major: u32, installed: &[RuntimeVersion]) -> Option<RuntimeVersion> {
+    installed
+        .iter()
+        .filter(|r| java_major(&r.version) == Some(major))
+        .max_by_key(|r| version_key(&r.version))
+        .cloned()
+}
+
+/// 综合：读取项目要求并在本机已安装版本里匹配
+pub fn suggest_node(dir: &Path, installed: &[RuntimeVersion]) -> Option<crate::models::RuntimeSuggestion> {
+    let req = node_requirement(dir)?;
+    let matched = pick_node(&req.wanted, installed).map(|r| crate::models::RuntimeChoice { version: r.version, path: r.path });
+    Some(crate::models::RuntimeSuggestion { wanted: req.wanted, source: req.source, matched })
+}
+
+pub fn suggest_java(dir: &Path, installed: &[RuntimeVersion]) -> Option<crate::models::RuntimeSuggestion> {
+    let req = java_requirement(dir)?;
+    let major: u32 = req.wanted.parse().ok()?;
+    let matched = pick_java(major, installed).map(|r| crate::models::RuntimeChoice { version: r.version, path: r.path });
+    Some(crate::models::RuntimeSuggestion { wanted: req.wanted, source: req.source, matched })
+}
+
 // ---------- 通用 ----------
 
 fn sub_dirs(dir: &Path) -> Vec<PathBuf> {
@@ -367,5 +622,48 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("fake-node-v99"), "{text}");
         assert!(text.contains(&format!("fake-java-{}", d.join("jdk").display())), "{text}");
+    }
+
+    #[test]
+    fn java_major_normalizes_all_spellings() {
+        for (raw, want) in [("1.8", 8), ("1.8.0_392", 8), ("8", 8), ("17", 17), ("17.0.9", 17), ("corretto-8.402.08.1", 8),
+            ("temurin-17.0.9", 17), ("openjdk64-17.0.1", 17), ("21.0.1-tem", 21), ("11.0.11+9", 11), ("1.7", 7)] {
+            assert_eq!(java_major(raw), Some(want), "{raw}");
+        }
+        assert_eq!(java_major("${java.version}"), None);
+        assert_eq!(java_major(""), None);
+    }
+
+    #[test]
+    fn semver_ranges() {
+        let yes = |v: &str, s: &str| assert!(version_satisfies(v, s), "{v} 应满足 {s}");
+        let no = |v: &str, s: &str| assert!(!version_satisfies(v, s), "{v} 不应满足 {s}");
+        yes("20.11.0", "20"); yes("20.11.0", "20.11"); yes("20.11.0", "20.11.0"); no("20.11.0", "20.5");
+        yes("18.19.1", "18.x"); yes("18.19.1", "18.*"); no("19.0.0", "18.x");
+        yes("18.0.0", ">=18"); no("16.9.0", ">=18"); yes("22.0.0", ">= 18");
+        yes("18.19.1", ">=16 <21"); no("21.0.0", ">=16 <21"); no("15.0.0", ">=16 <21");
+        yes("18.19.1", "^18.0.0"); no("19.0.0", "^18.0.0"); no("17.9.0", "^18.0.0"); yes("0.2.9", "^0.2.3"); no("0.3.0", "^0.2.3");
+        yes("18.2.5", "~18.2.0"); no("18.3.0", "~18.2.0"); yes("18.9.0", "~18");
+        yes("20.1.0", "^18 || ^20"); no("19.1.0", "^18 || ^20");
+        yes("18.0.0", "16 - 20"); no("21.0.0", "16 - 20");
+        yes("18.0.0", ">17"); no("17.9.0", ">17"); yes("20.0.0", "<=20"); yes("20.1.0", "<=20"); no("21.0.0", "<=20");
+        no("20.0.0", "<20"); yes("19.9.9", "<20");
+        no("abc", "20"); no("20.0.0", "garbage");
+    }
+
+    #[test]
+    fn pick_node_prefers_lowest_satisfying_major_then_latest() {
+        let inst = vec![
+            RuntimeVersion { version: "22.1.0".into(), source: "t".into(), path: "/22".into() },
+            RuntimeVersion { version: "20.11.0".into(), source: "t".into(), path: "/20".into() },
+            RuntimeVersion { version: "20.5.1".into(), source: "t".into(), path: "/20old".into() },
+            RuntimeVersion { version: "18.19.1".into(), source: "t".into(), path: "/18".into() },
+        ];
+        assert_eq!(pick_node(">=18", &inst).unwrap().path, "/18");
+        assert_eq!(pick_node(">=19", &inst).unwrap().path, "/20", "同主版本取最新，而不是 20.5.1");
+        assert_eq!(pick_node("^18 || ^20", &inst).unwrap().path, "/18");
+        assert_eq!(pick_node("22", &inst).unwrap().path, "/22");
+        assert!(pick_node("16", &inst).is_none());
+        assert!(pick_node(">=99", &inst).is_none());
     }
 }

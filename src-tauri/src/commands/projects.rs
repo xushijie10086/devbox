@@ -206,7 +206,11 @@ pub fn pick_directory() -> Result<Option<String>, String> {
 /// 根据工作目录里的配置文件 / 文档，自动探测项目信息用于表单填充
 #[tauri::command]
 pub fn detect_project(path: String) -> Result<DetectedProject, String> {
-    let dir = Path::new(&path);
+    detect_in(Path::new(&path), &crate::commands::runtime::installed())
+}
+
+/// 识别项目信息；installed 是本机已安装的 Node / JDK，用来匹配项目声明的版本要求
+fn detect_in(dir: &Path, installed: &crate::commands::runtime::Runtimes) -> Result<DetectedProject, String> {
     if !dir.is_dir() {
         return Err("目录不存在或不是文件夹".into());
     }
@@ -319,12 +323,52 @@ pub fn detect_project(path: String) -> Result<DetectedProject, String> {
         }
     }
 
+    // 项目声明的 Node / JDK 版本，并在本机已安装的版本里匹配
+    d.node = crate::commands::runtime::suggest_node(dir, &installed.node);
+    d.java = crate::commands::runtime::suggest_java(dir, &installed.java);
+    d.notes = maven_notes(dir);
+
     d.summary = if hint.is_empty() {
         "未识别到已知项目类型，请手动填写".into()
     } else {
         format!("已根据 {} 自动填充，可再手动调整", hint)
     };
     Ok(d)
+}
+
+/// 多模块 Maven 项目的提醒：根目录一般没有 spring-boot 插件，直接 `mvn spring-boot:run`
+/// 会报 "No plugin found for prefix 'spring-boot'"，应该在带插件的子模块里启动
+fn maven_notes(dir: &Path) -> Vec<String> {
+    let Ok(pom) = fs::read_to_string(dir.join("pom.xml")) else { return vec![] };
+    if !pom.contains("<modules>") || pom.contains("spring-boot-maven-plugin") {
+        return vec![];
+    }
+    let mut modules = Vec::new();
+    let mut rest = pom.as_str();
+    while let Some(i) = rest.find("<module>") {
+        let after = &rest[i + "<module>".len()..];
+        let Some(j) = after.find("</module>") else { break };
+        modules.push(after[..j].trim().to_string());
+        rest = &after[j..];
+    }
+    let boot: Vec<&String> = modules
+        .iter()
+        .filter(|m| {
+            fs::read_to_string(dir.join(m).join("pom.xml")).map_or(false, |p| p.contains("spring-boot-maven-plugin"))
+        })
+        .collect();
+    let head = "这是多模块 Maven 项目，根目录没有 spring-boot 插件，直接 mvn spring-boot:run 会报 No plugin found for prefix 'spring-boot'。";
+    match boot.as_slice() {
+        [m] => vec![format!(
+            "{head}建议先在根目录执行一次 mvn install -DskipTests，再把工作目录改为 {}/{m} 启动",
+            dir.display()
+        )],
+        [] => vec![format!("{head}请把工作目录改为带 spring-boot 插件的子模块，或改用 java -jar 运行打包产物")],
+        many => vec![format!(
+            "{head}带 spring-boot 插件的子模块有：{}；请把工作目录改为要启动的那个",
+            many.iter().map(|m| m.as_str()).collect::<Vec<_>>().join("、")
+        )],
+    }
 }
 
 /// 从文本里粗略提取端口号：匹配包含 "port" 的行后面的第一个数字
@@ -466,5 +510,121 @@ mod group_tests {
         .unwrap();
         assert!(c.project_groups.is_empty());
         assert_eq!(c.projects[0].group, None);
+    }
+}
+
+#[cfg(test)]
+mod detect_runtime_tests {
+    use super::*;
+    use crate::commands::runtime::{Runtimes, RuntimeVersion};
+
+    fn rv(version: &str, path: &str) -> RuntimeVersion {
+        RuntimeVersion { version: version.into(), source: "t".into(), path: path.into() }
+    }
+
+    fn installed() -> Runtimes {
+        Runtimes {
+            node: vec![rv("22.1.0", "/n22"), rv("20.11.0", "/n20"), rv("20.5.1", "/n20old"), rv("18.19.1", "/n18")],
+            java: vec![rv("21.0.1", "/j21"), rv("17.0.9", "/j17"), rv("1.8.0_392", "/j8")],
+        }
+    }
+
+    fn dir(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("devbox-detect-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        for (f, c) in files {
+            let p = d.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, c).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn nvmrc_selects_latest_of_that_major() {
+        let d = dir("nvmrc", &[("package.json", r#"{"name":"web","scripts":{"dev":"vite"}}"#), (".nvmrc", "v20\n")]);
+        let r = detect_in(&d, &installed()).unwrap();
+        let n = r.node.unwrap();
+        assert_eq!((n.wanted.as_str(), n.source.as_str()), ("20", ".nvmrc"));
+        assert_eq!(n.matched.unwrap().version, "20.11.0", "同主版本取最新");
+        assert!(r.java.is_none());
+    }
+
+    #[test]
+    fn engines_range_picks_lowest_satisfying_major() {
+        let d = dir("engines", &[("package.json", r#"{"name":"w","engines":{"node":">=18"}}"#)]);
+        let n = detect_in(&d, &installed()).unwrap().node.unwrap();
+        assert_eq!(n.source, "package.json (engines)");
+        assert_eq!(n.matched.unwrap().version, "18.19.1", "满足 >=18 的最低主版本，最保守");
+    }
+
+    #[test]
+    fn unsatisfiable_node_reports_wanted_without_match() {
+        let d = dir("nonode", &[(".nvmrc", "14.21.3")]);
+        let n = detect_in(&d, &installed()).unwrap().node.unwrap();
+        assert_eq!(n.wanted, "14.21.3");
+        assert!(n.matched.is_none(), "本机没有 Node 14");
+    }
+
+    #[test]
+    fn vague_node_specs_are_ignored() {
+        for spec in ["lts/*", "lts/iron", "node", "latest", ""] {
+            let d = dir("vague", &[(".nvmrc", spec)]);
+            assert!(detect_in(&d, &installed()).unwrap().node.is_none(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn pom_java_version_matches_legacy_1_8() {
+        let pom = "<project><properties><java.version>1.8</java.version></properties></project>";
+        let d = dir("pom8", &[("pom.xml", pom)]);
+        let j = detect_in(&d, &installed()).unwrap().java.unwrap();
+        assert_eq!((j.wanted.as_str(), j.source.as_str()), ("8", "pom.xml"));
+        assert_eq!(j.matched.unwrap().path, "/j8", "1.8 与 8 视为同一个版本");
+    }
+
+    #[test]
+    fn java_requirement_from_other_files() {
+        let cases: &[(&str, &str, &str, &str)] = &[
+            (".sdkmanrc", "java=17.0.9-tem\n", "17", ".sdkmanrc"),
+            (".tool-versions", "nodejs 20.1.0\njava corretto-8.402.08.1\n", "8", ".tool-versions"),
+            (".java-version", "11\n", "11", ".java-version"),
+            ("build.gradle", "java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }", "21", "build.gradle"),
+            ("build.gradle", "sourceCompatibility = '1.8'", "8", "build.gradle"),
+            ("build.gradle.kts", "kotlin { jvmToolchain(17) }", "17", "build.gradle.kts"),
+        ];
+        for (file, content, major, src) in cases {
+            let d = dir("jreq", &[(file, content)]);
+            let r = detect_in(&d, &installed()).unwrap().java.unwrap_or_else(|| panic!("{file}"));
+            assert_eq!((r.wanted.as_str(), r.source.as_str()), (*major, *src), "{file}");
+        }
+        // 引用了变量的写法无法判断，不应乱猜
+        let d = dir("jvar", &[("pom.xml", "<properties><java.version>${jdk}</java.version></properties>")]);
+        assert!(detect_in(&d, &installed()).unwrap().java.is_none());
+    }
+
+    #[test]
+    fn tool_versions_gives_node_too() {
+        let d = dir("tv", &[(".tool-versions", "nodejs 18.19.1\njava 17\n")]);
+        let r = detect_in(&d, &installed()).unwrap();
+        assert_eq!(r.node.unwrap().matched.unwrap().version, "18.19.1");
+        assert_eq!(r.java.unwrap().matched.unwrap().path, "/j17");
+    }
+
+    #[test]
+    fn multi_module_maven_gets_a_launch_hint() {
+        let root = "<project><modules><module>core</module><module>admin</module></modules></project>";
+        let d = dir("mm", &[
+            ("pom.xml", root),
+            ("core/pom.xml", "<project/>"),
+            ("admin/pom.xml", "<project><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>"),
+        ]);
+        let r = detect_in(&d, &installed()).unwrap();
+        assert_eq!(r.notes.len(), 1);
+        assert!(r.notes[0].contains("No plugin found") && r.notes[0].contains("admin"), "{:?}", r.notes);
+        // 单模块 / 根 pom 自带插件：不打扰
+        let d = dir("single", &[("pom.xml", "<project><artifactId>a</artifactId></project>")]);
+        assert!(detect_in(&d, &installed()).unwrap().notes.is_empty());
     }
 }

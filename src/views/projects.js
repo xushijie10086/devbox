@@ -823,7 +823,27 @@ export function mount(root) {
           const urlInput = form.querySelector('[name="url"]');
           if (urlInput && !urlInput.value.trim()) urlInput.value = d.url;
         }
-        toast(d.summary || "已自动填充", "success");
+        syncRuntimeRows(); // 类型被程序改了（不会触发 change 事件），手动同步 Node / JDK 行的显隐
+
+        // 项目声明的 Node / JDK 版本：本机有就自动选中，没有就明确告诉用户缺什么
+        const lines = [];
+        let warn = false;
+        const applyRuntime = (sug, rs, row, label) => {
+          if (!sug || row.style.display === "none") return;
+          if (sug.matched) {
+            rs.sel.value = sug.matched.path;
+            lines.push(`已选 ${label} ${sug.matched.version}（${sug.source} 要求 ${sug.wanted}）`);
+          } else {
+            warn = true;
+            lines.push(`项目要求 ${label} ${sug.wanted}（${sug.source}），本机没有检测到，请先安装`);
+          }
+        };
+        applyRuntime(d.node, nodeRs, nodeRow, "Node");
+        applyRuntime(d.java, javaRs, javaRow, "JDK");
+        if (d.notes?.length) warn = true;
+
+        const text = [d.summary || "已自动填充", ...lines, ...(d.notes || [])].join("\n");
+        toast(text, warn ? "warning" : "success");
       } catch (e) {
         toast(String(e), "error");
       } finally {
