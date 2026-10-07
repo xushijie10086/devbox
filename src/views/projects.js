@@ -431,7 +431,7 @@ export function mount(root) {
     const groupBadge = activeTab === TAB_ALL && p.group ? el("span", { class: "badge badge-group", title: "所属项目组" }, `# ${p.group}`) : null;
 
     // 第三行标签：当前分支 + Node / JDK 版本，都可点击切换
-    const chips = [branchChip(p), jobChip(p, st), ...runtimeChips(p)].filter(Boolean);
+    const chips = [branchChip(p), jobChip(p, st), depChip(p), ...runtimeChips(p)].filter(Boolean);
 
     const nameCell = el("div", { class: "name-cell" }, [
       el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
@@ -458,7 +458,7 @@ export function mount(root) {
       ? [el("button", { class: "run-btn sm", disabled: "disabled" }, "⏳ 启动中…")]
       : running
       ? [
-          el("button", { class: "danger-btn sm", onclick: () => act(api.stopProject(p.id), "已停止") }, "■ 停止"),
+          el("button", { class: "danger-btn sm", onclick: () => stopProject(p) }, "■ 停止"),
           el("button", { class: "ghost-btn sm", onclick: () => launch(p, api.restartProject) }, "↻ 重启"),
         ]
       : [el("button", { class: "run-btn sm", onclick: () => launch(p, api.startProject) }, "▶ 启动")];
@@ -514,6 +514,37 @@ export function mount(root) {
       pulling.delete(p.id);
       render();
     }
+  }
+
+  // 启动依赖标签：「↳ 依赖 数据库、后端」。依赖项已被删除的不显示
+  function depChip(p) {
+    const names = (p.depends_on || []).map((id) => projects.find((x) => x.id === id)?.name).filter(Boolean);
+    if (names.length === 0) return null;
+    return el("span", { class: "dep-chip", title: `启动「${p.name}」前，会先启动并等待就绪：${names.join("、")}` }, `↳ 依赖 ${names.join("、")}`);
+  }
+
+  /** 一个项目的全部依赖 id（含间接依赖，已防循环） */
+  function allDeps(p, seen = new Set()) {
+    for (const id of p.depends_on || []) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const dep = projects.find((x) => x.id === id);
+      if (dep) allDeps(dep, seen);
+    }
+    return seen;
+  }
+
+  // 停止项目：若有正在运行的项目依赖它，先确认
+  async function stopProject(p) {
+    const dependents = projects.filter((x) => (x.depends_on || []).includes(p.id) && statuses[x.id]?.running);
+    if (dependents.length > 0) {
+      const ok = await confirmDialog(
+        `「${dependents.map((d) => d.name).join("、")}」依赖「${p.name}」，且正在运行。\n停止它之后，这些项目可能出错。\n\n仍要停止「${p.name}」吗？`,
+        { okText: "仍然停止", cancelText: "取消" },
+      );
+      if (!ok) return;
+    }
+    await act(api.stopProject(p.id), "已停止");
   }
 
   // 正在运行的脚本任务标签（带计时），点击可取消
@@ -806,7 +837,10 @@ export function mount(root) {
   // 启动 / 重启并反馈结果：成功、成功但有提醒、失败（含原因）。
   // 后端会等到端口就绪或进程提前退出才返回，期间行内显示「启动中…」。
   async function launch(p, fn) {
+    // 还没运行的依赖（含依赖的依赖）会被一起启动，它们也显示「启动中…」
+    const pre = [...allDeps(p)].filter((id) => !statuses[id]?.running);
     starting.add(p.id);
+    pre.forEach((id) => starting.add(id));
     render();
     renderGroupTools();
     try {
@@ -816,6 +850,7 @@ export function mount(root) {
       toast(`${p.name}：${String(e)}`, "error");
     } finally {
       starting.delete(p.id);
+      pre.forEach((id) => starting.delete(id));
       await refresh();
     }
   }
@@ -908,6 +943,22 @@ export function mount(root) {
     kindSel.addEventListener("change", syncRuntimeRows);
     syncRuntimeRows();
 
+    // 启动前依赖：勾选的项目会先启动并等它就绪，然后才启动本项目
+    const depBoxes = projects
+      .filter((o) => o.id !== data.id)
+      .map((o) => {
+        const cb = el("input", { type: "checkbox", value: o.id });
+        if ((data.depends_on || []).includes(o.id)) cb.checked = true;
+        return el("label", { class: "dep-item" }, [cb, el("span", {}, o.name)]);
+      });
+    const depRow = el("div", { class: "form-row" }, [
+      el("span", {}, "启动前依赖"),
+      depBoxes.length
+        ? el("div", { class: "dep-list" }, depBoxes)
+        : el("small", { class: "dim" }, "还没有其他项目可以依赖"),
+      depBoxes.length ? el("small", { class: "dim" }, "勾选的项目会先启动并等它就绪（有端口就等端口监听），再启动本项目。") : null,
+    ]);
+
     const autoRestart = el("input", { type: "checkbox", name: "auto_restart" });
     if (data.auto_restart) autoRestart.checked = true;
 
@@ -964,6 +1015,7 @@ export function mount(root) {
       f("url", "打开地址(可选)", "http://localhost:3000"),
       f("editor", "编辑器命令", "code"),
       el("label", { class: "form-row" }, [el("span", {}, "环境变量"), envArea]),
+      depRow,
       el("label", { class: "form-row checkbox" }, [autoRestart, el("span", {}, "崩溃后自动重启")]),
     ]);
 
@@ -1030,6 +1082,7 @@ export function mount(root) {
         path: get("path"),
         kind: kindSel.value,
         group: groupSel.value || null,
+        depends_on: [...depRow.querySelectorAll("input:checked")].map((i) => i.value),
         // 当前类型下看不到的那一项视为不指定，避免残留的旧选择悄悄生效
         node: nodeRow.style.display === "none" ? null : nodeRs.value(),
         java: javaRow.style.display === "none" ? null : javaRs.value(),
@@ -1045,7 +1098,11 @@ export function mount(root) {
         toast("名称、工作目录、启动命令为必填", "error");
         return false;
       }
-      await guard(api.saveProject(project), "已保存");
+      try {
+        await guard(api.saveProject(project), "已保存");
+      } catch (_) {
+        return false; // 保存失败（如依赖成环）：错误已弹出，弹窗保持打开让用户改
+      }
       await refresh();
       return true;
     });

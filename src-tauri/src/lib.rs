@@ -15,6 +15,8 @@ pub fn run() {
         .manage(AppState::new())
         .setup(|app| {
             let _ = state::APP_HANDLE.set(app.handle().clone());
+            // 上次被强杀 / 崩溃时遗留的项目进程，先清理掉，免得占着端口、和新启动的冲突
+            commands::lifecycle::reap_orphans(&app.state::<AppState>());
             tray::build(app.handle())?;
             // 后台巡检：窗口关着也能发现项目崩溃，并持续记录「正在运行的项目」
             commands::lifecycle::spawn_supervisor(app.handle().clone());

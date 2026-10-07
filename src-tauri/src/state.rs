@@ -35,10 +35,18 @@ pub struct AppState {
     pub procs: Mutex<HashMap<String, RunningProc>>,
     /// project_id -> 日志缓冲（读线程写入，前端轮询读取）
     pub logs: Mutex<HashMap<String, Arc<Mutex<VecDeque<LogLine>>>>>,
+    /// 正在做「启动确认」的项目 id：巡检的 reap_dead 不去回收它们，
+    /// 由确认流程自己观察并报告结果（否则进程一退出就可能被抢先收走，确认流程会误报「被停止」）
+    pub verifying: Mutex<std::collections::HashSet<String>>,
+    /// project_id -> 启动锁：同一个项目同一时刻只允许一个启动流程（含等待依赖）在跑，
+    /// 「本组启动」「托盘」「恢复」等入口并发发起启动时，靠它保证顺序和去重
+    pub start_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// project_id -> 最近一次计算的 git 状态（后台线程刷新）
     pub git_status: Mutex<HashMap<String, crate::commands::git::GitStatus>>,
     /// project_id -> 正在运行的脚本任务
     pub jobs: Mutex<HashMap<String, Job>>,
+    /// 启动时清理掉的上次残留进程（项目名），告知前端后清空
+    pub orphans_cleaned: Mutex<Vec<String>>,
     /// 尚未被前端取走的进程退出通知
     pub exit_events: Mutex<Vec<ExitEvent>>,
     /// 正在退出：冻结「最近运行集合」的记录，避免停止项目的过程把它覆盖成空
@@ -68,8 +76,11 @@ impl AppState {
             config_path,
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
+            verifying: Mutex::new(std::collections::HashSet::new()),
+            start_locks: Mutex::new(HashMap::new()),
             git_status: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
+            orphans_cleaned: Mutex::new(Vec::new()),
             exit_events: Mutex::new(Vec::new()),
             quitting: AtomicBool::new(false),
             quit_confirmed: AtomicBool::new(false),
@@ -82,6 +93,16 @@ impl AppState {
     pub fn for_test(config: Config) -> Self {
         let path = std::env::temp_dir().join(format!("devbox-test-config-{:?}.json", std::thread::current().id()));
         Self::with_config(config, path)
+    }
+
+    /// 获取（必要时创建）某项目的启动锁
+    pub fn start_lock(&self, project_id: &str) -> Arc<Mutex<()>> {
+        self.start_locks
+            .lock()
+            .unwrap()
+            .entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// 把当前配置写回磁盘

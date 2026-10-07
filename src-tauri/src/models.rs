@@ -40,6 +40,18 @@ pub struct Project {
     /// 指定的 JDK 版本；None 表示用系统默认
     #[serde(default)]
     pub java: Option<RuntimeChoice>,
+    /// 启动前需要先就绪的项目 id（如后端依赖数据库项目，前端依赖后端）
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+}
+
+/// 一个运行中项目进程的记录
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProcRecord {
+    pub id: String,
+    pub pid: u32,
+    /// 进程启动时间（自 epoch 的秒数）。用来确认「这个 pid 还是当初那个进程」，防止 pid 被复用后误杀
+    pub start_time: u64,
 }
 
 /// 项目选定的运行时版本。version 仅用于展示；真正生效的是 path：
@@ -66,6 +78,10 @@ pub struct Config {
     /// 下次启动据此提示是否恢复
     #[serde(default)]
     pub last_running: Vec<String>,
+    /// 运行中项目的进程记录（pid + 进程启动时间）。应用被强杀 / 崩溃时，项目进程会成为孤儿继续跑，
+    /// 下次启动据此（pid 和启动时间都对得上才算）找到并清理它们
+    #[serde(default)]
+    pub last_procs: Vec<ProcRecord>,
     /// 关闭系统通知（默认开启，所以字段取反，缺省即开启）
     #[serde(default)]
     pub mute_notifications: bool,

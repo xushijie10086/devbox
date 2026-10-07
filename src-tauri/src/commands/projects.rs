@@ -73,6 +73,67 @@ fn delete_group(cfg: &mut Config, name: &str) -> Result<usize, String> {
     Ok(moved)
 }
 
+/// 规整并校验启动依赖：去掉自己、已不存在的项目和重复项；发现循环依赖则报错（说明环路）
+fn normalize_deps(cfg: &Config, project: &mut Project) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    let own_id = project.id.clone();
+    project
+        .depends_on
+        .retain(|d| *d != own_id && cfg.projects.iter().any(|p| p.id == *d) && seen.insert(d.clone()));
+
+    // 从本项目出发沿依赖走，如果能绕回来就是循环
+    let deps_of = |id: &str| -> Vec<String> {
+        if id == own_id {
+            project.depends_on.clone()
+        } else {
+            cfg.projects.iter().find(|p| p.id == id).map(|p| p.depends_on.clone()).unwrap_or_default()
+        }
+    };
+    let name_of = |id: &str| -> String {
+        if id == own_id {
+            project.name.clone()
+        } else {
+            cfg.projects.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string())
+        }
+    };
+    fn walk(
+        cur: &str,
+        target: &str,
+        path: &mut Vec<String>,
+        visited: &mut std::collections::HashSet<String>,
+        deps_of: &dyn Fn(&str) -> Vec<String>,
+    ) -> bool {
+        for d in deps_of(cur) {
+            if d == target {
+                path.push(d);
+                return true;
+            }
+            if visited.insert(d.clone()) {
+                path.push(d.clone());
+                if walk(&d, target, path, visited, deps_of) {
+                    return true;
+                }
+                path.pop();
+            }
+        }
+        false
+    }
+    let mut path = vec![own_id.clone()];
+    if walk(&own_id, &own_id, &mut path, &mut std::collections::HashSet::new(), &deps_of) {
+        let names: Vec<String> = path.iter().map(|i| name_of(i)).collect();
+        return Err(format!("依赖出现循环：{}，请去掉其中一条依赖", names.join(" → ")));
+    }
+    Ok(())
+}
+
+/// 删除项目，并把它从其它项目的依赖里摘掉
+fn remove_project(cfg: &mut Config, id: &str) {
+    cfg.projects.retain(|p| p.id != id);
+    for p in cfg.projects.iter_mut() {
+        p.depends_on.retain(|d| d != id);
+    }
+}
+
 /// 保存项目前规整它的分组：空串视为未分组；指向尚不存在的分组时自动登记
 fn normalize_project_group(cfg: &mut Config, project: &mut Project) {
     project.group = project
@@ -129,6 +190,7 @@ pub fn save_project(mut project: Project, state: State<AppState>) -> Result<Proj
     }
     {
         let mut cfg = state.config.lock().unwrap();
+        normalize_deps(&cfg, &mut project)?;
         normalize_project_group(&mut cfg, &mut project);
         if let Some(existing) = cfg.projects.iter_mut().find(|p| p.id == project.id) {
             *existing = project.clone();
@@ -169,7 +231,7 @@ pub fn delete_project(id: String, state: State<AppState>) -> Result<(), String> 
     let _ = crate::commands::process::stop_project_inner(&id, state.inner());
     {
         let mut cfg = state.config.lock().unwrap();
-        cfg.projects.retain(|p| p.id != id);
+        remove_project(&mut cfg, &id);
     }
     state.persist()?;
     Ok(())
@@ -628,5 +690,55 @@ mod detect_runtime_tests {
         // 单模块 / 根 pom 自带插件：不打扰
         let d = dir("single", &[("pom.xml", "<project><artifactId>a</artifactId></project>")]);
         assert!(detect_in(&d, &installed()).unwrap().notes.is_empty());
+    }
+
+    // ---------- 启动依赖 ----------
+
+    fn proj_with_deps(id: &str, deps: &[&str]) -> Project {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": id.to_uppercase(), "path": "/tmp", "start_command": "x", "depends_on": deps
+        }))
+        .unwrap()
+    }
+
+    fn cfg_of(list: Vec<Project>) -> Config {
+        Config { projects: list, ..Default::default() }
+    }
+
+    #[test]
+    fn deps_are_cleaned_on_save() {
+        let cfg = cfg_of(vec![proj_with_deps("a", &[]), proj_with_deps("b", &[])]);
+        let mut p = proj_with_deps("c", &["a", "a", "c", "ghost", "b"]);
+        normalize_deps(&cfg, &mut p).unwrap();
+        assert_eq!(p.depends_on, vec!["a", "b"], "去重、去掉自己和不存在的项目");
+    }
+
+    #[test]
+    fn cycles_are_rejected_with_the_loop_spelled_out() {
+        // a → b → c 已存在；让 c 依赖 a 就成环
+        let cfg = cfg_of(vec![proj_with_deps("a", &["b"]), proj_with_deps("b", &["c"]), proj_with_deps("c", &[])]);
+        let mut c = proj_with_deps("c", &["a"]);
+        let err = normalize_deps(&cfg, &mut c).unwrap_err();
+        assert!(err.contains("依赖出现循环") && err.contains("C → A → B → C"), "{err}");
+        // 非环：c 依赖 b 的上游以外的项目是可以的；菱形依赖不算环
+        let cfg = cfg_of(vec![proj_with_deps("a", &[]), proj_with_deps("b", &["a"]), proj_with_deps("c", &["a"]), proj_with_deps("d", &[])]);
+        let mut d = proj_with_deps("d", &["b", "c"]);
+        normalize_deps(&cfg, &mut d).unwrap();
+        assert_eq!(d.depends_on, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn deleting_a_project_removes_it_from_dependents() {
+        let mut cfg = cfg_of(vec![proj_with_deps("a", &[]), proj_with_deps("b", &["a"]), proj_with_deps("c", &["a", "b"])]);
+        remove_project(&mut cfg, "a");
+        assert_eq!(cfg.projects.len(), 2);
+        assert!(cfg.projects[0].depends_on.is_empty());
+        assert_eq!(cfg.projects[1].depends_on, vec!["b"]);
+    }
+
+    #[test]
+    fn old_config_without_depends_on_loads() {
+        let p: Project = serde_json::from_str(r#"{"id":"x","name":"x","path":"/","start_command":"y"}"#).unwrap();
+        assert!(p.depends_on.is_empty());
     }
 }

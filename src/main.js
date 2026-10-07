@@ -91,17 +91,24 @@ listen("quit-requested", async (e) => {
   }
 }).catch(() => {});
 
-// 启动时：上次退出（或崩溃、被强杀）时有项目在运行，问一下要不要恢复
+// 启动时：上次退出（或崩溃、被强杀）时有项目在运行，问一下要不要恢复。
+// 后端会先把上次异常退出后残留的项目进程清理掉（否则它们占着端口，恢复启动会冲突），这里一并告知。
 (async () => {
-  let items = [];
+  let info = { items: [], cleaned: [] };
   try {
-    items = await api.pendingRestore();
+    info = (await api.pendingRestore()) || info;
   } catch (_) {
     return;
   }
-  if (!items || items.length === 0) return;
+  const items = info.items || [];
+  const cleaned = info.cleaned || [];
+  const cleanedNote = cleaned.length ? `\n（上次异常退出后，这些项目的进程还残留着，已先清理：${cleaned.join("、")}）` : "";
+  if (items.length === 0) {
+    if (cleaned.length) toast(`已清理上次异常退出残留的项目进程：${cleaned.join("、")}`, "info");
+    return;
+  }
   const ok = await confirmDialog(
-    `上次退出时有 ${items.length} 个项目在运行：\n${items.map((i) => `· ${i.name}`).join("\n")}\n\n要恢复启动它们吗？`,
+    `上次退出时有 ${items.length} 个项目在运行：\n${items.map((i) => `· ${i.name}`).join("\n")}${cleanedNote}\n\n要恢复启动它们吗？`,
     { okText: "恢复启动", cancelText: "忽略", danger: false },
   );
   if (ok) {

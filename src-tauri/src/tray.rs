@@ -3,7 +3,7 @@
 //! 菜单内容由纯函数 `model` 根据状态算出，`refresh` 只在内容变化时才重建真正的菜单，
 //! 所以巡检线程可以放心地每隔几秒调用。
 
-use crate::commands::process::{running_ids, start_and_verify, stop_all, stop_project_inner};
+use crate::commands::process::{running_ids, start_with_deps, stop_all, stop_project_inner};
 use crate::models::StartOutcome;
 use crate::notify;
 use crate::state::AppState;
@@ -118,7 +118,7 @@ pub fn toggle_project(state: &AppState, id: &str) -> (String, String) {
             Err(e) => (format!("「{name}」停止失败"), e),
         };
     }
-    let result: Result<StartOutcome, String> = start_and_verify(id, state);
+    let result: Result<StartOutcome, String> = start_with_deps(id, state);
     notify::start_text(&name, &result)
 }
 

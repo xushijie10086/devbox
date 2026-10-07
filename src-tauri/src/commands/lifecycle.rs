@@ -6,28 +6,95 @@
 
 use crate::commands::process::{reap_dead, running_ids, stop_all};
 use crate::commands::scripts::cancel_all_jobs;
+use crate::models::ProcRecord;
 use crate::state::AppState;
 use serde::Serialize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// 某个 pid 的进程启动时间（自 epoch 的秒数）；进程不存在返回 None
+fn proc_start_time(sys: &sysinfo::System, pid: u32) -> Option<u64> {
+    sys.process(sysinfo::Pid::from_u32(pid)).map(|p| p.start_time())
+}
+
+fn new_system() -> sysinfo::System {
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
+    sys.refresh_processes();
+    sys
+}
+
 /// 把「正在运行的项目」同步到配置里（有变化才落盘）。返回是否有变化。
-/// 退出过程中、或还没问过用户是否恢复时不记录，保护上次的记录不被覆盖。
+/// - 进程记录（pid + 启动时间）随时更新，这样即使被强杀也能找到孤儿进程
+/// - 「最近运行的项目」（用于恢复提示）在退出过程中、或还没问过用户是否恢复时冻结，
+///   保护上次的记录不被覆盖
 pub fn sync_last_running(state: &AppState) -> bool {
-    if state.quitting.load(SeqCst) || state.restore_pending.load(SeqCst) {
+    if state.quitting.load(SeqCst) {
         return false;
     }
     let running = running_ids(state);
-    {
+    let records: Vec<ProcRecord> = if running.is_empty() {
+        Vec::new()
+    } else {
+        let sys = new_system();
+        let procs = state.procs.lock().unwrap();
+        running
+            .iter()
+            .filter_map(|id| {
+                let pid = procs.get(id)?.pid;
+                Some(ProcRecord { id: id.clone(), pid, start_time: proc_start_time(&sys, pid)? })
+            })
+            .collect()
+    };
+    let changed = {
         let mut cfg = state.config.lock().unwrap();
-        if cfg.last_running == running {
-            return false;
+        let mut changed = false;
+        if cfg.last_procs != records {
+            cfg.last_procs = records;
+            changed = true;
         }
-        cfg.last_running = running;
+        if !state.restore_pending.load(SeqCst) && cfg.last_running != running {
+            cfg.last_running = running;
+            changed = true;
+        }
+        changed
+    };
+    if changed {
+        let _ = state.persist();
     }
-    let _ = state.persist();
-    true
+    changed
+}
+
+/// 启动时清理上次残留的项目进程：DevBox 被强杀 / 崩溃（含开发模式下重编译重启）后，
+/// 项目进程会变成孤儿继续跑，占着端口，而新实例里它们显示为「未运行」。
+/// 只有 pid 和进程启动时间都对得上才清理，pid 被别的进程复用了不会误杀。返回被清理的项目名。
+pub fn reap_orphans(state: &AppState) -> Vec<String> {
+    let records = std::mem::take(&mut state.config.lock().unwrap().last_procs);
+    if records.is_empty() {
+        return vec![];
+    }
+    let sys = new_system();
+    let mut cleaned = Vec::new();
+    for r in &records {
+        if proc_start_time(&sys, r.pid) == Some(r.start_time) {
+            crate::commands::process::kill_tree(r.pid);
+            let name = state
+                .config
+                .lock()
+                .unwrap()
+                .projects
+                .iter()
+                .find(|p| p.id == r.id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| r.id.clone());
+            eprintln!("[devbox] 清理上次残留的项目进程: {name} (pid {})", r.pid);
+            cleaned.push(name);
+        }
+    }
+    let _ = state.persist(); // 记录已清空，落盘
+    state.orphans_cleaned.lock().unwrap().extend(cleaned.iter().cloned());
+    cleaned
 }
 
 /// 退出前：最后记录一次运行集合，然后冻结
@@ -133,15 +200,24 @@ fn restore_candidates(state: &AppState) -> Vec<RestoreItem> {
         .collect()
 }
 
-/// 前端启动时询问：有哪些项目可以恢复
+#[derive(Serialize, Clone, Debug)]
+pub struct RestoreInfo {
+    /// 可以恢复的项目
+    pub items: Vec<RestoreItem>,
+    /// 启动时已清理掉的、上次异常退出残留的进程（项目名）
+    pub cleaned: Vec<String>,
+}
+
+/// 前端启动时询问：有哪些项目可以恢复，以及清理了哪些残留进程
 #[tauri::command]
-pub fn pending_restore(state: State<AppState>) -> Vec<RestoreItem> {
+pub fn pending_restore(state: State<AppState>) -> RestoreInfo {
     let items = restore_candidates(&state);
     if items.is_empty() {
         // 没有可恢复的，直接放行记录，不再等待
         state.restore_pending.store(false, SeqCst);
     }
-    items
+    let cleaned = std::mem::take(&mut *state.orphans_cleaned.lock().unwrap());
+    RestoreInfo { items, cleaned }
 }
 
 /// 用户已答复（恢复或忽略）：解除冻结，从现在起重新记录运行集合
@@ -223,9 +299,11 @@ mod tests {
         let items = restore_candidates(&st);
         assert_eq!(items, vec![RestoreItem { id: "p0".into(), name: "项目0".into() }], "已运行的、已删除的都不提示");
 
-        // 还没答复期间，记录被冻结，不会因为「现在只有 p1 在跑」而覆盖
-        assert!(!sync_last_running(&st));
+        // 还没答复期间，「最近运行的项目」被冻结，不会因为「现在只有 p1 在跑」而覆盖
+        sync_last_running(&st);
         assert_eq!(st.config.lock().unwrap().last_running, vec!["p0", "p1", "gone"]);
+        // 但进程记录照常更新（强杀后才找得到孤儿）
+        assert_eq!(st.config.lock().unwrap().last_procs.len(), 1);
 
         // 答复后解除冻结，开始记录实际运行集合
         st.restore_pending.store(false, SeqCst);
@@ -251,5 +329,92 @@ mod tests {
         tick(&st); // 巡检线程每 2 秒做的事
         assert_eq!(st.exit_events.lock().unwrap().len(), 1, "窗口关着也能发现崩溃");
         assert!(st.config.lock().unwrap().last_running.is_empty(), "崩了的项目不再算运行中");
+    }
+
+    // ---------- 孤儿进程 ----------
+
+    fn spawn_detached_sleep(secs: u32) -> std::process::Child {
+        std::process::Command::new("sleep").arg(secs.to_string()).spawn().unwrap()
+    }
+
+    #[test]
+    fn process_records_carry_pid_and_start_time_and_are_updated() {
+        let st = state(2);
+        start_and_verify("p0", &st).unwrap();
+        assert!(sync_last_running(&st));
+        let rec = st.config.lock().unwrap().last_procs.clone();
+        assert_eq!(rec.len(), 1);
+        assert_eq!(rec[0].id, "p0");
+        assert_eq!(rec[0].pid, st.procs.lock().unwrap().get("p0").unwrap().pid);
+        assert!(rec[0].start_time > 1_600_000_000, "应是 epoch 秒: {}", rec[0].start_time);
+        assert!(!sync_last_running(&st), "没变化不重复落盘");
+        // 重启 → pid 变了，记录跟着变
+        crate::commands::process::stop_project_inner("p0", &st).unwrap();
+        start_and_verify("p0", &st).unwrap();
+        assert!(sync_last_running(&st));
+        assert_ne!(st.config.lock().unwrap().last_procs[0].pid, rec[0].pid);
+        stop_all(&st);
+        sync_last_running(&st);
+        assert!(st.config.lock().unwrap().last_procs.is_empty(), "项目都停了，记录清空");
+    }
+
+    #[test]
+    fn orphans_from_a_killed_previous_run_are_cleaned_up() {
+        // 模拟上一个 DevBox 被强杀：项目进程还活着，配置里留着它的记录，而本实例的 procs 是空的
+        let st = state(1);
+        let mut orphan = spawn_detached_sleep(60);
+        let sys = new_system();
+        let start = proc_start_time(&sys, orphan.id()).unwrap();
+        st.config.lock().unwrap().last_procs = vec![ProcRecord { id: "p0".into(), pid: orphan.id(), start_time: start }];
+        assert!(alive(orphan.id()));
+
+        let cleaned = reap_orphans(&st);
+        assert_eq!(cleaned, vec!["项目0"]);
+        let _ = orphan.wait(); // 回收僵尸，才能判断它真的退出了
+        assert!(!alive(orphan.id()), "残留进程应被结束");
+        assert!(st.config.lock().unwrap().last_procs.is_empty());
+        assert_eq!(*st.orphans_cleaned.lock().unwrap(), vec!["项目0"]);
+    }
+
+    #[test]
+    fn a_reused_pid_is_never_killed() {
+        // pid 还在但启动时间对不上 = 这个 pid 已被别的进程复用，绝不能杀
+        let st = state(1);
+        let mut other = spawn_detached_sleep(60);
+        let sys = new_system();
+        let start = proc_start_time(&sys, other.id()).unwrap();
+        st.config.lock().unwrap().last_procs =
+            vec![ProcRecord { id: "p0".into(), pid: other.id(), start_time: start + 1000 }];
+        assert!(reap_orphans(&st).is_empty());
+        assert!(alive(other.id()), "启动时间对不上，不能误杀");
+        let _ = other.kill();
+        let _ = other.wait();
+    }
+
+    #[test]
+    fn dead_or_missing_records_are_ignored_and_cleared() {
+        let st = state(1);
+        st.config.lock().unwrap().last_procs = vec![ProcRecord { id: "p0".into(), pid: 4_000_000, start_time: 1 }];
+        assert!(reap_orphans(&st).is_empty());
+        assert!(st.config.lock().unwrap().last_procs.is_empty(), "记录用完即清");
+        assert!(reap_orphans(&st).is_empty(), "没有记录时什么也不做");
+    }
+
+    #[test]
+    fn clean_exit_leaves_no_orphans_to_reap_next_time() {
+        let st = state(2);
+        start_and_verify("p0", &st).unwrap();
+        start_and_verify("p1", &st).unwrap();
+        sync_last_running(&st);
+        handle_exit(&st); // 正常退出：停掉所有项目
+        std::thread::sleep(Duration::from_millis(300));
+        // 下次启动：记录里的 pid 已经不存在了，不会清理任何东西
+        // （先取出再构造：同一条语句里连续 lock() 同一个 Mutex，前一个守卫还没释放会自死锁）
+        let (projects, last_procs) = {
+            let cfg = st.config.lock().unwrap();
+            (cfg.projects.clone(), cfg.last_procs.clone())
+        };
+        let next = AppState::for_test(Config { projects, last_procs, ..Default::default() });
+        assert!(reap_orphans(&next).is_empty());
     }
 }
