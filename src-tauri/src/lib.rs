@@ -75,6 +75,7 @@ pub fn run() {
             // ports
             commands::ports::list_ports,
             commands::ports::list_project_ports,
+            commands::ports::check_project_port,
             commands::ports::kill_process,
             // hosts
             commands::hosts::get_hosts,

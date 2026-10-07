@@ -77,6 +77,36 @@ export function confirmDialog(message, { okText = "确定", cancelText = "取消
   });
 }
 
+/**
+ * 多选一对话框：choices 为 [{ label, value, kind }]（kind: "danger" | "primary" | "ghost"），
+ * 返回被点中的 value；按 Esc / 点遮罩视为取消，返回 null。
+ */
+export function choiceDialog(message, choices) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") finish(null);
+    };
+    const buttons = choices.map((c) =>
+      el("button", { class: `${c.kind === "danger" ? "danger-btn" : c.kind === "primary" ? "primary-btn" : "ghost-btn"}`, onclick: () => finish(c.value) }, c.label),
+    );
+    const box = el("div", { class: "confirm-box" }, [
+      el("div", { class: "confirm-msg" }, message),
+      el("div", { class: "confirm-actions" }, buttons),
+    ]);
+    const overlay = el("div", { class: "confirm-overlay", onclick: (e) => { if (e.target === overlay) finish(null); } }, [box]);
+    document.addEventListener("keydown", onKey);
+    document.body.append(overlay);
+  });
+}
+
 /** 汇总一批启动结果（Promise.allSettled 的返回）：几个成功、哪些失败及原因，合成一条提示 */
 export function summarizeStart(items, results) {
   const failed = [];

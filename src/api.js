@@ -34,6 +34,7 @@ export const api = {
   // 端口
   listPorts: () => invoke("list_ports"),
   listProjectPorts: () => invoke("list_project_ports"),
+  checkProjectPort: (id) => invoke("check_project_port", { id }),
   killProcess: (pid, port) => invoke("kill_process", { pid, port: port ?? null }),
 
   // hosts

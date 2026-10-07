@@ -374,9 +374,11 @@ pub(crate) fn start_and_verify_with(
                     "进程在运行，但 {} 秒内端口 {p} 仍未监听，可能还在启动中；请查看日志确认",
                     limit.as_secs()
                 ),
-                (None, Some(p)) => format!(
-                    "进程在运行，但启动前端口 {p} 就已被占用，无法确认本项目是否就绪；若日志报端口冲突，请到「端口」页结束占用进程"
-                ),
+                (None, Some(p)) => {
+                    let who = crate::commands::ports::describe_holders(&crate::commands::ports::who_holds(state, p));
+                    let who = if who.is_empty() { "其它进程".to_string() } else { who };
+                    format!("进程在运行，但端口 {p} 启动前就已被{who}占用，无法确认本项目是否就绪；若日志报端口冲突，请先结束占用者")
+                }
                 (None, None) => "进程已启动，但没配置端口，无法确认是否真正就绪；如果之后崩溃会再提示，也可查看日志".to_string(),
             };
             push_system_log(state, id, &msg);

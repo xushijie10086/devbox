@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { el, toast, guard, fmtUptime, confirmDialog, summarizeStart, summarizePull } from "../ui.js";
+import { el, toast, guard, fmtUptime, confirmDialog, choiceDialog, summarizeStart, summarizePull } from "../ui.js";
 import { icon } from "../icons.js";
 
 // 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
@@ -834,9 +834,58 @@ export function mount(root) {
     });
   }
 
+  /**
+   * 启动前的端口预检：本项目以及它还没运行的依赖，登记的端口若已被占用，
+   * 说明是谁占的，让用户选择「结束占用并启动 / 仍然启动 / 取消」。返回 true 表示继续启动。
+   * 检测本身失败（如 lsof 不可用）时忽略，照常启动。
+   */
+  async function portPreflight(p) {
+    const chain = [...allDeps(p)]
+      .map((id) => projects.find((x) => x.id === id))
+      .filter((x) => x && !statuses[x.id]?.running);
+    chain.push(p);
+    for (const q of chain) {
+      if (q.port == null) continue;
+      let chk;
+      try {
+        chk = await api.checkProjectPort(q.id);
+      } catch (_) {
+        continue;
+      }
+      if (!chk.holders?.length) continue;
+      const who = chk.holders.map((h) => (h.project ? `项目「${h.project}」` : `${h.process}（PID ${h.pid}）`)).join("、");
+      const choice = await choiceDialog(
+        `端口 ${chk.port} 已被占用：${who}\n\n「${q.name}」要用这个端口，直接启动很可能会冲突。`,
+        [
+          { label: "结束占用并启动", value: "kill", kind: "danger" },
+          { label: "仍然启动", value: "go", kind: "ghost" },
+          { label: "取消", value: null, kind: "ghost" },
+        ],
+      );
+      if (choice === null) return false;
+      if (choice === "kill") {
+        for (const h of chk.holders) {
+          try {
+            // 占用者是 DevBox 里运行中的项目：正常停止它；否则结束该进程（连同子进程，并确认端口已释放）
+            if (h.project_id) await api.stopProject(h.project_id);
+            else await api.killProcess(h.pid, chk.port);
+          } catch (e) {
+            toast(`无法释放端口 ${chk.port}：${String(e)}`, "error");
+            return false;
+          }
+        }
+        toast(`已释放端口 ${chk.port}`, "success");
+        await refresh();
+      }
+    }
+    return true;
+  }
+
   // 启动 / 重启并反馈结果：成功、成功但有提醒、失败（含原因）。
   // 后端会等到端口就绪或进程提前退出才返回，期间行内显示「启动中…」。
   async function launch(p, fn) {
+    // 启动（不是重启）前先检查端口：重启时端口就是它自己占着的
+    if (fn === api.startProject && !(await portPreflight(p))) return;
     // 还没运行的依赖（含依赖的依赖）会被一起启动，它们也显示「启动中…」
     const pre = [...allDeps(p)].filter((id) => !statuses[id]?.running);
     starting.add(p.id);
