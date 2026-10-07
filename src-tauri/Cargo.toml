@@ -22,6 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.30"
 dirs = "5"
 tiny_http = "0.12"
+ctrlc = { version = "3", features = ["termination"] }
 
 [features]
 # 默认无额外特性

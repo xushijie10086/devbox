@@ -62,6 +62,10 @@ pub struct Config {
     /// 项目组列表（决定 tab 的顺序，也允许存在暂时没有项目的空组）
     #[serde(default)]
     pub project_groups: Vec<String>,
+    /// 最近一次记录到的「正在运行的项目 id」。应用退出（含被强杀 / 崩溃）后，
+    /// 下次启动据此提示是否恢复
+    #[serde(default)]
+    pub last_running: Vec<String>,
 }
 
 /// 自动探测到的项目信息（用于表单一键填充）

@@ -186,7 +186,7 @@ pub fn start_and_verify(id: &str, state: &AppState) -> Result<StartOutcome, Stri
     start_and_verify_with(id, state, START_GRACE, START_PORT_TIMEOUT)
 }
 
-fn start_and_verify_with(
+pub(crate) fn start_and_verify_with(
     id: &str,
     state: &AppState,
     grace: Duration,
@@ -370,7 +370,7 @@ pub fn stop_project_inner(id: &str, state: &AppState) -> Result<(), String> {
 /// 回收已经退出的进程（更新 procs 表）。
 /// 用户主动停止的项目在 stop_project_inner 里已先从表中移除，不会走到这里；
 /// 走到这里的都是自己退出的：非 0 退出（崩溃等）会留下一条通知给前端。
-fn reap_dead(state: &AppState) {
+pub(crate) fn reap_dead(state: &AppState) {
     let dead: Vec<(String, std::process::ExitStatus)> = {
         let mut procs = state.procs.lock().unwrap();
         let dead: Vec<_> = procs
@@ -388,6 +388,28 @@ fn reap_dead(state: &AppState) {
     for (id, status) in dead {
         record_exit(state, &id, status);
     }
+}
+
+/// 当前正在运行的项目 id（已排序，先回收已退出的）
+pub fn running_ids(state: &AppState) -> Vec<String> {
+    reap_dead(state);
+    let mut ids: Vec<String> = state.procs.lock().unwrap().keys().cloned().collect();
+    ids.sort();
+    ids
+}
+
+/// 并行停止所有运行中的项目，返回停止的个数。退出应用时用：
+/// 逐个停会各等 400ms，项目多时太慢
+pub fn stop_all(state: &AppState) -> usize {
+    let ids = running_ids(state);
+    std::thread::scope(|s| {
+        for id in &ids {
+            s.spawn(move || {
+                let _ = stop_project_inner(id, state);
+            });
+        }
+    });
+    ids.len()
 }
 
 /// 记录一次自行退出：写入项目日志，非 0 退出时再生成前端通知
@@ -522,17 +544,10 @@ fn push_system_log(state: &AppState, id: &str, text: &str) {
 mod tests {
     use super::*;
     use crate::models::Config;
-    use std::collections::HashMap;
 
     fn state_with(project: serde_json::Value) -> AppState {
         let p: Project = serde_json::from_value(project).unwrap();
-        AppState {
-            config: Mutex::new(Config { projects: vec![p], project_groups: vec![] }),
-            config_path: std::env::temp_dir().join("devbox-test-config.json"),
-            procs: Mutex::new(HashMap::new()),
-            logs: Mutex::new(HashMap::new()),
-            exit_events: Mutex::new(Vec::new()),
-        }
+        AppState::for_test(Config { projects: vec![p], ..Default::default() })
     }
 
     fn run(cmd: &str, port: Option<u16>, path: &str) -> Result<StartOutcome, String> {

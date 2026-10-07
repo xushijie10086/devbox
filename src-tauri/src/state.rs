@@ -1,6 +1,7 @@
 use crate::models::{Config, ExitEvent, LogLine};
 use std::collections::{HashMap, VecDeque};
 use std::process::Child;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -24,19 +25,45 @@ pub struct AppState {
     pub logs: Mutex<HashMap<String, Arc<Mutex<VecDeque<LogLine>>>>>,
     /// 尚未被前端取走的进程退出通知
     pub exit_events: Mutex<Vec<ExitEvent>>,
+    /// 正在退出：冻结「最近运行集合」的记录，避免停止项目的过程把它覆盖成空
+    pub quitting: AtomicBool,
+    /// 用户已确认退出（或收到终止信号），可以放行 ExitRequested
+    pub quit_confirmed: AtomicBool,
+    /// 启动时发现上次有项目在运行、且还没问过用户是否恢复
+    pub restore_pending: AtomicBool,
 }
 
 impl AppState {
     pub fn new() -> Self {
         let config_path = default_config_path();
         let config = load_config(&config_path);
+        let restore_pending = config
+            .last_running
+            .iter()
+            .any(|id| config.projects.iter().any(|p| &p.id == id));
+        let mut st = Self::with_config(config, config_path);
+        st.restore_pending = AtomicBool::new(restore_pending);
+        st
+    }
+
+    fn with_config(config: Config, config_path: std::path::PathBuf) -> Self {
         AppState {
             config: Mutex::new(config),
             config_path,
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
             exit_events: Mutex::new(Vec::new()),
+            quitting: AtomicBool::new(false),
+            quit_confirmed: AtomicBool::new(false),
+            restore_pending: AtomicBool::new(false),
         }
+    }
+
+    /// 测试用：用给定配置构造状态，配置文件写到临时目录
+    #[cfg(test)]
+    pub fn for_test(config: Config) -> Self {
+        let path = std::env::temp_dir().join(format!("devbox-test-config-{:?}.json", std::thread::current().id()));
+        Self::with_config(config, path)
     }
 
     /// 把当前配置写回磁盘

@@ -20,6 +20,11 @@ export const api = {
   restartProject: (id) => invoke("restart_project", { id }),
   projectStatuses: () => invoke("project_statuses"),
   healthTick: () => invoke("health_tick"),
+
+  // 应用生命周期：退出确认 / 启动时恢复上次运行的项目
+  quitApp: () => invoke("quit_app"),
+  pendingRestore: () => invoke("pending_restore"),
+  resolveRestore: () => invoke("resolve_restore"),
   takeExitEvents: () => invoke("take_exit_events"),
 
   // 端口

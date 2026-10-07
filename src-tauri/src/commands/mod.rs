@@ -1,5 +1,6 @@
 pub mod git;
 pub mod hosts;
+pub mod lifecycle;
 pub mod logs;
 pub mod ports;
 pub mod process;

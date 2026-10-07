@@ -77,6 +77,23 @@ export function confirmDialog(message, { okText = "确定", cancelText = "取消
   });
 }
 
+/** 汇总一批启动结果（Promise.allSettled 的返回）：几个成功、哪些失败及原因，合成一条提示 */
+export function summarizeStart(items, results) {
+  const failed = [];
+  let warned = 0;
+  results.forEach((r, i) => {
+    if (r.status === "rejected") failed.push(`${items[i].name}：${String(r.reason).split("\n")[0]}`);
+    else if (r.value.level === "warning") warned++;
+  });
+  const ok = items.length - failed.length;
+  if (failed.length === 0) {
+    return warned
+      ? { text: `已启动 ${ok} 个项目，其中 ${warned} 个需留意（见各项目提示）`, kind: "warning" }
+      : { text: `已启动 ${ok} 个项目`, kind: "success" };
+  }
+  return { text: `成功 ${ok} 个，失败 ${failed.length} 个：\n${failed.join("\n")}`, kind: "error" };
+}
+
 export function fmtUptime(secs) {
   if (secs == null) return "—";
   if (secs < 60) return `${secs}s`;

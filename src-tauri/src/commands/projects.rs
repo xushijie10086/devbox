@@ -448,6 +448,7 @@ mod group_tests {
         Config {
             projects: vec![project("a", Some("后端")), project("b", Some("后端")), project("c", None)],
             project_groups: vec!["后端".into(), "前端".into()],
+            ..Default::default()
         }
     }
 

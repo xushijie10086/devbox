@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { el, toast, guard, fmtUptime, confirmDialog } from "../ui.js";
+import { el, toast, guard, fmtUptime, confirmDialog, summarizeStart } from "../ui.js";
 import { icon } from "../icons.js";
 
 // 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
@@ -168,18 +168,8 @@ export function mount(root) {
     const results = await Promise.allSettled(items.map((p) => api.startProject(p.id)));
     items.forEach((p) => starting.delete(p.id));
 
-    const failed = [];
-    let warned = 0;
-    results.forEach((r, i) => {
-      if (r.status === "rejected") failed.push(`${items[i].name}：${String(r.reason).split("\n")[0]}`);
-      else if (r.value.level === "warning") warned++;
-    });
-    const ok = items.length - failed.length;
-    if (failed.length === 0) {
-      toast(warned ? `已启动 ${ok} 个项目，其中 ${warned} 个需留意（见各项目提示）` : `已启动 ${ok} 个项目`, warned ? "warning" : "success");
-    } else {
-      toast(`成功 ${ok} 个，失败 ${failed.length} 个：\n${failed.join("\n")}`, "error");
-    }
+    const sum = summarizeStart(items, results);
+    toast(sum.text, sum.kind);
     await refresh();
   }
 

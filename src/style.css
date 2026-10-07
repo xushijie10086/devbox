@@ -222,7 +222,7 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 /* 应用内确认弹窗 */
 .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 300; }
 .confirm-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px 24px; width: 360px; max-width: 90vw; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
-.confirm-msg { font-size: 14px; line-height: 1.6; color: var(--text); margin-bottom: 20px; }
+.confirm-msg { font-size: 14px; line-height: 1.6; color: var(--text); margin-bottom: 20px; white-space: pre-wrap; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
 /* Toast */
