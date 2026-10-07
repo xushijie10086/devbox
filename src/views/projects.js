@@ -16,7 +16,7 @@ export function mount(root) {
   let drag = null; // 拖拽上下文，见 startDrag
 
   const list = el("div", { class: "card-grid" });
-  const header = el("div", { class: "view-header" }, [
+  const header = el("div", { class: "view-header sticky-header" }, [
     el("h1", {}, "项目"),
     el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
   ]);
@@ -25,7 +25,7 @@ export function mount(root) {
   // 用 Pointer 事件手写拖拽：macOS WKWebView 对 HTML5 drag-and-drop 支持不完整，
   // 拖拽途中移动源节点会被忽略，导致「能拖但插不进去」。
   function startDrag(card, e) {
-    if (e.button !== 0 || drag) return;
+    if (e.button !== 0 || drag || card.parentNode !== list) return;
     e.preventDefault();
 
     const rect = card.getBoundingClientRect();
@@ -47,6 +47,25 @@ export function mount(root) {
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", endDrag);
     document.addEventListener("pointercancel", endDrag);
+  }
+
+  // 卡片空白处按下后拖动超过阈值才进入拖拽，避免点击、选中文本被误判；
+  // 按钮、输入框与命令框保持原有交互，不触发拖拽
+  function armDrag(card, down) {
+    if (down.button !== 0 || drag || down.target.closest("button, input, textarea, select, a, .card-cmd")) return;
+    const disarm = () => {
+      document.removeEventListener("pointermove", probe);
+      document.removeEventListener("pointerup", disarm);
+      document.removeEventListener("pointercancel", disarm);
+    };
+    const probe = (e) => {
+      if (Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < 5) return;
+      disarm();
+      startDrag(card, down);
+    };
+    document.addEventListener("pointermove", probe);
+    document.addEventListener("pointerup", disarm);
+    document.addEventListener("pointercancel", disarm);
   }
 
   function onMove(e) {
@@ -181,7 +200,7 @@ export function mount(root) {
       el("code", {}, p.start_command),
     ]);
 
-    // 拖拽手柄：按住它才让卡片可拖，避免影响卡片里的文本选择与按钮
+    // 拖拽手柄：按下即拖；卡片其它空白处也可拖，见 armDrag
     const handle = el("span", { class: "drag-handle", title: "拖动调整排序" });
     handle.append(icon("grip", 16));
 
@@ -195,6 +214,9 @@ export function mount(root) {
     ]);
 
     handle.addEventListener("pointerdown", (e) => startDrag(card, e));
+    card.addEventListener("pointerdown", (e) => {
+      if (!handle.contains(e.target)) armDrag(card, e);
+    });
 
     return card;
   }
