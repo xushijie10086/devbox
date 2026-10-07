@@ -49,6 +49,10 @@ pub fn run() {
             commands::process::project_statuses,
             commands::process::health_tick,
             commands::process::take_exit_events,
+            // 脚本任务
+            commands::scripts::list_scripts,
+            commands::scripts::run_script,
+            commands::scripts::cancel_script,
             // 系统通知
             notify::get_notifications_enabled,
             notify::set_notifications_enabled,

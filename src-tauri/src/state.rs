@@ -18,6 +18,15 @@ pub struct RunningProc {
 /// 应用句柄：后台线程（巡检、托盘菜单回调）要发系统通知、刷新托盘时用
 pub static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 
+/// 一个正在运行的脚本任务（install / build / test 等一次性命令）。每个项目同时最多一个
+pub struct Job {
+    pub label: String,
+    pub pid: u32,
+    pub started_at: Instant,
+    /// 用户点了取消：结束后据此区分「被取消」和「失败」
+    pub cancelled: bool,
+}
+
 /// 全局应用状态
 pub struct AppState {
     pub config: Mutex<Config>,
@@ -26,6 +35,8 @@ pub struct AppState {
     pub procs: Mutex<HashMap<String, RunningProc>>,
     /// project_id -> 日志缓冲（读线程写入，前端轮询读取）
     pub logs: Mutex<HashMap<String, Arc<Mutex<VecDeque<LogLine>>>>>,
+    /// project_id -> 正在运行的脚本任务
+    pub jobs: Mutex<HashMap<String, Job>>,
     /// 尚未被前端取走的进程退出通知
     pub exit_events: Mutex<Vec<ExitEvent>>,
     /// 正在退出：冻结「最近运行集合」的记录，避免停止项目的过程把它覆盖成空
@@ -55,6 +66,7 @@ impl AppState {
             config_path,
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(HashMap::new()),
             exit_events: Mutex::new(Vec::new()),
             quitting: AtomicBool::new(false),
             quit_confirmed: AtomicBool::new(false),

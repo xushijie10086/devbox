@@ -79,10 +79,12 @@ listen("quit-requested", async (e) => {
   if (askingQuit) return;
   askingQuit = true;
   try {
-    const ok = await confirmDialog(
-      `现在有 ${e.payload} 个项目在运行。\n退出 DevBox 会停止它们，下次启动时可以一键恢复。\n\n确定退出吗？`,
-      { okText: "停止并退出", cancelText: "取消" },
-    );
+    const { projects = 0, jobs = 0 } = e.payload || {};
+    const parts = [];
+    if (projects) parts.push(`${projects} 个项目在运行`);
+    if (jobs) parts.push(`${jobs} 个脚本任务在运行`);
+    const tail = projects ? "退出 DevBox 会停止它们，下次启动时可以一键恢复项目。" : "退出 DevBox 会取消它们。";
+    const ok = await confirmDialog(`现在有 ${parts.join("、")}。\n${tail}\n\n确定退出吗？`, { okText: "停止并退出", cancelText: "取消" });
     if (ok) await api.quitApp();
   } finally {
     askingQuit = false;
@@ -97,7 +99,7 @@ listen("quit-requested", async (e) => {
   } catch (_) {
     return;
   }
-  if (items.length === 0) return;
+  if (!items || items.length === 0) return;
   const ok = await confirmDialog(
     `上次退出时有 ${items.length} 个项目在运行：\n${items.map((i) => `· ${i.name}`).join("\n")}\n\n要恢复启动它们吗？`,
     { okText: "恢复启动", cancelText: "忽略", danger: false },

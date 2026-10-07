@@ -360,7 +360,7 @@ export function mount(root) {
     const groupBadge = activeTab === TAB_ALL && p.group ? el("span", { class: "badge badge-group", title: "所属项目组" }, `# ${p.group}`) : null;
 
     // 第三行标签：当前分支 + Node / JDK 版本，都可点击切换
-    const chips = [branchChip(p), ...runtimeChips(p)].filter(Boolean);
+    const chips = [branchChip(p), jobChip(p, st), ...runtimeChips(p)].filter(Boolean);
 
     const nameCell = el("div", { class: "name-cell" }, [
       el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
@@ -394,7 +394,10 @@ export function mount(root) {
 
     // 操作列：生命周期按钮 + 快捷入口 + 编辑 / 删除
     const actions = el("div", { class: "actions-cell" }, [
-      el("div", { class: "run-group" }, runBtns),
+      el("div", { class: "run-group" }, [
+        ...runBtns,
+        el("button", { class: "ghost-btn sm", title: "运行脚本：安装依赖、构建、测试等一次性任务", onclick: () => openScriptDialog(p) }, "⚙ 脚本"),
+      ]),
       el("div", { class: "quick-group" }, [
         iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
         p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
@@ -436,6 +439,94 @@ export function mount(root) {
       pulling.delete(p.id);
       render();
     }
+  }
+
+  // 正在运行的脚本任务标签（带计时），点击可取消
+  function jobChip(p, st) {
+    if (!st?.job) return null;
+    const chip = el("button", {
+      class: "rt-chip job-chip",
+      title: `脚本「${st.job}」运行中（点击取消）`,
+      onclick: () => cancelJob(p, st.job),
+    });
+    chip.append(icon("cog", 11), el("span", {}, `${st.job} · ${fmtUptime(st.job_secs)}`));
+    return chip;
+  }
+
+  async function cancelJob(p, label) {
+    if (!(await confirmDialog(`取消「${p.name}」正在运行的脚本「${label}」？`, { okText: "取消脚本", cancelText: "继续运行" }))) return;
+    try {
+      await api.cancelScript(p.id);
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    await refresh();
+  }
+
+  // 运行一个脚本任务并等结果：完成 / 失败（含原因和最后输出）/ 已取消
+  async function runScript(p, command, label) {
+    toast(`${p.name}：开始运行脚本「${label}」…（输出见日志）`, "info");
+    const pending = api.runScript(p.id, command, label);
+    setTimeout(refresh, 500); // 让「脚本运行中」标签尽快出现
+    try {
+      const out = await pending;
+      toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+    } finally {
+      await refresh();
+    }
+  }
+
+  // 脚本选择窗口：列出识别到的脚本，点一下就运行；也可以输入自定义命令
+  async function openScriptDialog(p) {
+    let scripts = [];
+    try {
+      scripts = await api.listScripts(p.id);
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+      return;
+    }
+    const running = statuses[p.id]?.job;
+    let closeModal = () => {};
+    const go = (command, label) => {
+      closeModal();
+      runScript(p, command, label);
+    };
+
+    const list = el("div", { class: "sc-list" });
+    if (scripts.length === 0) {
+      list.append(el("div", { class: "empty" }, "没有识别到脚本。可以在下面输入自定义命令。"));
+    }
+    for (const s of scripts) {
+      list.append(el("div", { class: `sc-item${running ? " disabled" : ""}`, onclick: () => go(s.command, s.label) }, [
+        el("div", { class: "sc-main" }, [el("span", { class: "sc-name" }, s.label), el("span", { class: "sc-src" }, s.source)]),
+        el("div", { class: "sc-cmd", title: s.command }, `$ ${s.command}`),
+        s.hint ? el("div", { class: "sc-hint" }, s.hint) : null,
+      ]));
+    }
+
+    const input = el("input", { type: "text", placeholder: "自定义命令，如 npm run build -- --mode test", disabled: running ? "disabled" : false });
+    const runBtn = el("button", { class: "primary-btn", disabled: running ? "disabled" : false }, "运行");
+    const runCustom = () => {
+      const c = input.value.trim();
+      if (!c) return toast("请输入命令", "error");
+      go(c, c.length > 24 ? `${c.slice(0, 24)}…` : c);
+    };
+    runBtn.onclick = runCustom;
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") runCustom(); });
+
+    const body = el("div", { class: "form" }, [
+      running
+        ? el("div", { class: "sc-running" }, [
+            el("span", {}, `脚本「${running}」正在运行，结束后才能运行新的`),
+            el("button", { class: "danger-btn sm", onclick: () => { closeModal(); cancelJob(p, running); } }, "取消它"),
+          ])
+        : el("div", { class: "note" }, `在「${p.name}」的工作目录里运行，使用该项目选定的 Node / JDK 版本和环境变量，输出写入项目日志。`),
+      list,
+      el("div", { class: "sc-custom" }, [input, runBtn]),
+    ]);
+    closeModal = showModal(`运行脚本 · ${p.name}`, body, null, null);
   }
 
   // 当前分支标签（非 git 项目不显示）。点击打开分支切换
@@ -906,17 +997,19 @@ function showModal(title, body, onOk, okText = "保存") {
   const modal = el("div", { class: "modal" }, [
     el("div", { class: "modal-header" }, title),
     el("div", { class: "modal-body" }, body),
-    el("div", { class: "modal-footer" }, [cancelBtn, okBtn]),
+    el("div", { class: "modal-footer" }, okText === null ? [cancelBtn] : [cancelBtn, okBtn]),
   ]);
   overlay.append(modal);
   document.body.append(overlay);
   const close = () => overlay.remove();
+  if (okText === null) cancelBtn.textContent = "关闭";
   cancelBtn.onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   okBtn.onclick = async () => {
     const ok = await onOk();
     if (ok !== false) close();
   };
+  return close;
 }
 
 // 只读的终端风格日志模态框（带关闭回调用于清理定时器）

@@ -111,6 +111,9 @@ pub struct ProjectStatus {
     pub uptime_secs: Option<u64>,
     /// 期望端口是否已监听
     pub port_up: Option<bool>,
+    /// 正在运行的脚本任务名（install / build 等），没有则为 None
+    pub job: Option<String>,
+    pub job_secs: Option<u64>,
 }
 
 /// 项目进程在「启动确认」之后才退出（崩溃等）时留给前端的通知

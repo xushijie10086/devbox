@@ -58,6 +58,7 @@ pub fn compute_statuses(state: &AppState) -> Vec<ProjectStatus> {
 
     let projects = state.config.lock().unwrap().projects.clone();
     let procs = state.procs.lock().unwrap();
+    let jobs = state.jobs.lock().unwrap();
 
     // 只在有运行进程时才做一次系统刷新，避免不必要开销
     let mut sys = System::new_with_specifics(
@@ -94,6 +95,8 @@ pub fn compute_statuses(state: &AppState) -> Vec<ProjectStatus> {
                 memory_mb: mem,
                 uptime_secs: uptime,
                 port_up,
+                job: jobs.get(&p.id).map(|j| j.label.clone()),
+                job_secs: jobs.get(&p.id).map(|j| j.started_at.elapsed().as_secs()),
             }
         })
         .collect()
@@ -128,24 +131,7 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
     if project.start_command.trim().is_empty() {
         return Err("启动命令为空，请先编辑项目填写启动命令".into());
     }
-    if !std::path::Path::new(&project.path).is_dir() {
-        return Err(format!("工作目录不存在或不是目录：{}", project.path));
-    }
-
-    // 选定的 Node / JDK 版本：写成命令前缀，保证在登录 shell 重排 PATH 之后才生效
-    let prelude = crate::commands::runtime::shell_prelude(&project)?;
-
-    let mut cmd = Command::new("/bin/sh");
-    cmd.current_dir(&project.path)
-        .arg("-lc")
-        .arg(format!("{prelude}{}", project.start_command))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    for (k, v) in &project.env {
-        cmd.env(k, v);
-    }
+    let mut cmd = shell_command(&project, &project.start_command)?;
 
     let mut child = cmd
         .spawn()
@@ -174,6 +160,27 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
         },
     );
     Ok(())
+}
+
+/// 构造「在项目工作目录里，用登录 shell 执行一条命令」：带上选定的 Node / JDK 版本前缀和项目环境变量，
+/// 输出走管道。启动项目和运行脚本共用，保证两者环境一致。
+pub(crate) fn shell_command(project: &Project, command: &str) -> Result<Command, String> {
+    if !std::path::Path::new(&project.path).is_dir() {
+        return Err(format!("工作目录不存在或不是目录：{}", project.path));
+    }
+    // 选定的 Node / JDK 版本：写成命令前缀，保证在登录 shell 重排 PATH 之后才生效
+    let prelude = crate::commands::runtime::shell_prelude(project)?;
+    let mut cmd = Command::new("/bin/sh");
+    cmd.current_dir(&project.path)
+        .arg("-lc")
+        .arg(format!("{prelude}{command}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in &project.env {
+        cmd.env(k, v);
+    }
+    Ok(cmd)
 }
 
 /// 无端口时，进程存活满这么久才算「已启动」；期间退出则视为启动失败
@@ -286,7 +293,7 @@ fn finish_exited(
 }
 
 /// 把退出码 / 信号翻译成人话
-fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
+pub(crate) fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     match (code, signal) {
         (Some(127), _) => "命令未找到（退出码 127），请检查启动命令，或该命令是否在登录 shell 的 PATH 中".into(),
         (Some(126), _) => "命令无法执行，权限不足（退出码 126）".into(),
@@ -297,7 +304,7 @@ fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
 }
 
 /// 失败 / 退出提示里附带的输出行数
-const TAIL_LINES: usize = 8;
+pub(crate) const TAIL_LINES: usize = 8;
 
 /// 没有信息量的行：空行、只有 [ERROR] 这类日志级别前缀、纯分隔线
 /// （Maven 的失败输出里一大半是这种，会把真正的错误行挤出摘要）
@@ -315,12 +322,12 @@ fn is_noise(line: &str) -> bool {
 }
 
 /// 取本次启动以来最后 n 行 stdout / stderr 输出（不含系统消息），单行过长会截断
-fn tail_since_start(buf: &Arc<Mutex<VecDeque<LogLine>>>, n: usize) -> Vec<String> {
+pub(crate) fn tail_since_start(buf: &Arc<Mutex<VecDeque<LogLine>>>, n: usize) -> Vec<String> {
     let b = buf.lock().unwrap();
     let mut lines: Vec<String> = Vec::new();
     for l in b.iter().rev() {
         if l.stream == "system" {
-            if l.text.starts_with("▶ 启动") {
+            if l.text.starts_with("▶ ") {
                 break;
             }
             continue;
@@ -451,7 +458,7 @@ pub fn take_exit_events(state: State<AppState>) -> Vec<ExitEvent> {
     std::mem::take(&mut *state.exit_events.lock().unwrap())
 }
 
-fn get_project(state: &AppState, id: &str) -> Option<Project> {
+pub(crate) fn get_project(state: &AppState, id: &str) -> Option<Project> {
     state
         .config
         .lock()
@@ -510,7 +517,7 @@ fn port_is_listening(port: u16) -> bool {
 
 // ---------- 日志辅助 ----------
 
-fn spawn_reader<R: Read + Send + 'static>(
+pub(crate) fn spawn_reader<R: Read + Send + 'static>(
     r: R,
     stream: &'static str,
     buf: Arc<Mutex<VecDeque<LogLine>>>,
@@ -526,7 +533,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     });
 }
 
-fn push_log(buf: &Arc<Mutex<VecDeque<LogLine>>>, stream: &str, text: String) {
+pub(crate) fn push_log(buf: &Arc<Mutex<VecDeque<LogLine>>>, stream: &str, text: String) {
     let mut b = buf.lock().unwrap();
     if b.len() >= MAX_LOG_LINES {
         b.pop_front();

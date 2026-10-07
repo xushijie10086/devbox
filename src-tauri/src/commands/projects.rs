@@ -165,6 +165,7 @@ pub fn reorder_projects(ids: Vec<String>, state: State<AppState>) -> Result<Vec<
 #[tauri::command]
 pub fn delete_project(id: String, state: State<AppState>) -> Result<(), String> {
     // 先确保进程已停止
+    let _ = crate::commands::scripts::cancel_job(state.inner(), &id);
     let _ = crate::commands::process::stop_project_inner(&id, state.inner());
     {
         let mut cfg = state.config.lock().unwrap();

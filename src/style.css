@@ -259,7 +259,7 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .ptable { overflow: visible; }
 .prow {
   display: grid; align-items: center; gap: 10px; padding: 9px 12px 9px 8px;
-  grid-template-columns: 22px minmax(160px, 1.7fr) minmax(90px, .9fr) 70px minmax(88px, .5fr) 240px; /* 末列定宽，各行才能对齐 */
+  grid-template-columns: 22px minmax(160px, 1.7fr) minmax(90px, .9fr) 70px minmax(88px, .5fr) 270px; /* 末列定宽，各行才能对齐 */
   border-bottom: 1px solid var(--border); background: transparent; cursor: grab;
 }
 .plist .prow:last-child { border-bottom: none; }
@@ -318,7 +318,7 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 
 /* 窄窗口：隐藏运行详情列 */
 @media (max-width: 1010px) {
-  .prow { grid-template-columns: 22px minmax(130px, 1.4fr) minmax(80px, .9fr) 66px 240px; }
+  .prow { grid-template-columns: 22px minmax(130px, 1.4fr) minmax(80px, .9fr) 66px 270px; }
   .prow > .meta-cell { display: none; }
 }
 
@@ -339,3 +339,21 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .br-tag.cur { color: var(--green); border-color: rgba(55,200,113,.45); }
 .br-tag.remote { color: var(--amber); border-color: rgba(240,180,41,.4); }
 .br-sub { margin-top: 2px; font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- 脚本任务 ---- */
+.job-chip { display: inline-flex; align-items: center; gap: 4px; color: var(--amber); border-color: rgba(240,180,41,.5); background: rgba(240,180,41,.08); }
+.job-chip svg { animation: spin 2s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.sc-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: #0b0d11; }
+.sc-item { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.sc-item:last-child { border-bottom: none; }
+.sc-item:hover { background: var(--panel); }
+.sc-item.disabled { opacity: .45; pointer-events: none; }
+.sc-main { display: flex; align-items: center; gap: 8px; }
+.sc-name { font-weight: 600; font-size: 13px; }
+.sc-src { font-size: 10.5px; padding: 0 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--dim); }
+.sc-cmd { font-family: "SF Mono", ui-monospace, monospace; font-size: 11.5px; color: #a9d0ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-hint { font-size: 11.5px; color: var(--amber); }
+.sc-running { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; padding: 8px 12px; border: 1px solid rgba(240,180,41,.4); border-radius: 8px; background: rgba(240,180,41,.07); }
+.sc-custom { display: flex; gap: 8px; }
+.sc-custom input { flex: 1; font-family: "SF Mono", ui-monospace, monospace; }

@@ -5,6 +5,7 @@
 //! 所以「退出但保持项目运行」做不到，只能停止并在下次启动时恢复。
 
 use crate::commands::process::{reap_dead, running_ids, stop_all};
+use crate::commands::scripts::cancel_all_jobs;
 use crate::state::AppState;
 use serde::Serialize;
 use std::sync::atomic::Ordering::SeqCst;
@@ -38,6 +39,7 @@ pub fn freeze_snapshot(state: &AppState) {
 /// 应用真正退出时的清理：记录运行集合并停止所有项目，保证不留孤儿进程
 pub fn handle_exit(state: &AppState) {
     freeze_snapshot(state);
+    cancel_all_jobs(state);
     stop_all(state);
 }
 
@@ -55,6 +57,11 @@ pub fn spawn_supervisor(app: AppHandle) {
     });
 }
 
+/// 正在运行的项目数和脚本任务数（退出前要告诉用户）
+fn busy(state: &AppState) -> (usize, usize) {
+    (running_ids(state).len(), state.jobs.lock().unwrap().len())
+}
+
 /// 点了窗口的关闭按钮：有运行中的项目就拦下关闭、让前端确认。
 /// 必须在关闭这一刻拦：等窗口被销毁、变成 ExitRequested 时再拦，已经没有窗口可以弹确认了。
 pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
@@ -63,12 +70,12 @@ pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) 
     if state.quit_confirmed.load(SeqCst) {
         return;
     }
-    let n = running_ids(&state).len();
-    if n == 0 {
+    let (projects, jobs) = busy(&state);
+    if projects + jobs == 0 {
         return;
     }
     api.prevent_close();
-    let _ = app.emit("quit-requested", n);
+    let _ = app.emit("quit-requested", serde_json::json!({ "projects": projects, "jobs": jobs }));
 }
 
 /// 收到退出请求：没有运行中的项目就直接放行；有的话拦下来，让前端弹确认
@@ -77,8 +84,8 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
     if state.quit_confirmed.load(SeqCst) {
         return;
     }
-    let n = running_ids(&state).len();
-    if n == 0 {
+    let (projects, jobs) = busy(&state);
+    if projects + jobs == 0 {
         return;
     }
     api.prevent_exit();
@@ -87,7 +94,7 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    let _ = app.emit("quit-requested", n);
+    let _ = app.emit("quit-requested", serde_json::json!({ "projects": projects, "jobs": jobs }));
 }
 
 /// Ctrl+C / kill 等终止信号：视为已确认退出（没人能回答对话框），走正常清理流程

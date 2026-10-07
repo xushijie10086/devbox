@@ -52,6 +52,11 @@ export const api = {
   clearLogs: (projectId) => invoke("clear_logs", { projectId }),
 
 
+  // 脚本 / 构建任务
+  listScripts: (id) => invoke("list_scripts", { id }),
+  runScript: (id, command, label) => invoke("run_script", { id, command, label }),
+  cancelScript: (id) => invoke("cancel_script", { id }),
+
   // 一键拉取代码 / 运行时版本（Node、JDK）
   gitPull: (id) => invoke("git_pull", { id }),
   gitBranches: (id) => invoke("git_branches", { id }),
