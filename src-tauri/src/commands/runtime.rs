@@ -31,7 +31,7 @@ pub fn list_runtimes() -> Runtimes {
 
 pub fn installed() -> Runtimes {
     let home = dirs::home_dir().unwrap_or_default();
-    let mut node = scan_node(&home);
+    let mut node = scan_node(Path::new("/"), &home, std::env::var_os("NVM_DIR").map(PathBuf::from));
     for v in scan_brew_node() {
         if !node.iter().any(|n| n.version == v.version) {
             node.push(v);
@@ -97,10 +97,10 @@ fn sh_quote(s: &str) -> String {
 
 // ---------- Node 探测 ----------
 
-fn scan_node(home: &Path) -> Vec<RuntimeVersion> {
-    let nvm_root = std::env::var_os("NVM_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".nvm"));
+/// `root` 为文件系统根、`nvm_dir` 为环境变量 NVM_DIR（生产环境传 "/" 和真实值，测试里传临时目录和 None，
+/// 这样结果不受运行机器的环境变量和已装版本影响）
+fn scan_node(root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<RuntimeVersion> {
+    let nvm_root = nvm_dir.unwrap_or_else(|| home.join(".nvm"));
     // (来源, 目录, 版本目录到 bin 的相对路径)
     let roots: Vec<(&str, PathBuf, &str)> = vec![
         ("nvm", nvm_root.join("versions/node"), "bin"),
@@ -109,12 +109,12 @@ fn scan_node(home: &Path) -> Vec<RuntimeVersion> {
         ("fnm", home.join(".fnm/node-versions"), "installation/bin"),
         ("Volta", home.join(".volta/tools/image/node"), "bin"),
         ("asdf", home.join(".asdf/installs/nodejs"), "bin"),
-        ("n", PathBuf::from("/usr/local/n/versions/node"), "bin"),
+        ("n", root.join("usr/local/n/versions/node"), "bin"),
     ];
 
     let mut found: Vec<RuntimeVersion> = Vec::new();
-    for (source, root, rel_bin) in roots {
-        for dir in sub_dirs(&root) {
+    for (source, versions_dir, rel_bin) in roots {
+        for dir in sub_dirs(&versions_dir) {
             let bin = dir.join(rel_bin);
             if !bin.join("node").exists() {
                 continue;
@@ -546,7 +546,7 @@ mod tests {
         script(&home.join(".volta/tools/image/node/20.11.0/bin/node"), "echo"); // 与 nvm 重复，应被去重
         fs::create_dir_all(home.join(".nvm/versions/node/v16.0.0")).unwrap(); // 没有 bin/node，应忽略
 
-        let got = scan_node(&home);
+        let got = scan_node(&home, &home, None); // 把 home 同时当文件系统根，不碰本机真实目录
         let versions: Vec<_> = got.iter().map(|r| r.version.as_str()).collect();
         assert_eq!(versions, vec!["22.1.0", "20.11.0", "18.19.1"]);
         assert_eq!(got[1].source, "nvm", "重复版本保留优先级靠前的来源");

@@ -4,6 +4,8 @@ mod logstore;
 mod models;
 mod notify;
 mod state;
+#[cfg(test)]
+mod testutil;
 mod tray;
 
 use state::AppState;

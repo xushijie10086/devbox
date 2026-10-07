@@ -352,35 +352,17 @@ mod tests {
         assert!(holders_of(9999, vec![info(8080, 1, "x")], &projects, &trees).is_empty(), "空闲端口");
     }
 
-    fn listen_in_child(port: u16) -> std::process::Child {
-        let mut c = Command::new("python3")
-            .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        for _ in 0..60 {
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return c;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let _ = c.kill();
-        let _ = c.wait(); // 起不来也别留下僵尸进程
-        panic!("测试用的监听进程没起来");
-    }
-
     #[test]
     fn external_listener_is_found_by_lsof() {
-        if Command::new("python3").arg("--version").output().is_err() || Command::new("lsof").arg("-v").output().is_err() {
+        if Command::new("lsof").arg("-v").output().is_err() {
             return;
         }
-        let mut child = listen_in_child(31976);
+        let mut child = crate::testutil::spawn_listener(31976);
         let st = AppState::for_test(crate::models::Config::default());
         let h = who_holds(&st, 31976);
         assert_eq!(h.len(), 1, "{h:?}");
         assert_eq!(h[0].pid, child.id());
-        assert!(h[0].process.starts_with("python"), "{}", h[0].process);
+        assert!(h[0].process.starts_with("devbox"), "{}", h[0].process);
         assert!(h[0].project.is_none(), "不是 DevBox 项目，应视为外部进程");
         assert!(who_holds(&st, 31979).is_empty(), "空闲端口");
         let _ = child.kill();
@@ -389,13 +371,13 @@ mod tests {
 
     #[test]
     fn listener_started_by_a_devbox_project_is_attributed_to_it() {
-        if Command::new("python3").arg("--version").output().is_err() || Command::new("lsof").arg("-v").output().is_err() {
+        if Command::new("lsof").arg("-v").output().is_err() {
             return;
         }
         let st = AppState::for_test(crate::models::Config {
             projects: vec![serde_json::from_value(serde_json::json!({
                 "id": "db", "name": "数据库", "path": "/tmp", "port": 31977,
-                "start_command": "exec python3 -m http.server 31977 --bind 127.0.0.1"
+                "start_command": crate::testutil::listen_command(31977)
             }))
             .unwrap()],
             ..Default::default()
@@ -409,10 +391,10 @@ mod tests {
 
     #[test]
     fn start_warning_names_who_already_holds_the_port() {
-        if Command::new("python3").arg("--version").output().is_err() || Command::new("lsof").arg("-v").output().is_err() {
+        if Command::new("lsof").arg("-v").output().is_err() {
             return;
         }
-        let mut squatter = listen_in_child(31978);
+        let mut squatter = crate::testutil::spawn_listener(31978);
         let st = AppState::for_test(crate::models::Config {
             projects: vec![serde_json::from_value(serde_json::json!({
                 "id": "p", "name": "后端", "path": "/tmp", "port": 31978, "start_command": "sleep 30"
@@ -422,7 +404,7 @@ mod tests {
         });
         let out = crate::commands::process::start_and_verify_with("p", &st, std::time::Duration::from_millis(300), std::time::Duration::from_secs(2)).unwrap();
         assert_eq!(out.level, "warning");
-        assert!(out.message.contains("端口 31978") && out.message.contains("python") && out.message.contains("占用"), "{}", out.message);
+        assert!(out.message.contains("端口 31978") && out.message.contains("devbox") && out.message.contains("占用"), "{}", out.message);
         crate::commands::process::stop_all(&st);
         let _ = squatter.kill();
         let _ = squatter.wait();

@@ -832,11 +832,8 @@ mod tests {
 
     #[test]
     fn dependency_with_a_listening_port_is_ready() {
-        if Command::new("python3").arg("--version").output().is_err() {
-            return;
-        }
         let st = state_of(serde_json::json!([
-            {"id":"a","name":"API","path":"/tmp","start_command":"python3 -m http.server 31968 --bind 127.0.0.1","port":31968},
+            {"id":"a","name":"API","path":"/tmp","start_command":crate::testutil::listen_command(31968),"port":31968},
             {"id":"b","name":"前端","path":"/tmp","start_command":"sleep 30","depends_on":["a"]},
         ]));
         let out = start_with_deps_with("b", &st, Duration::from_millis(300), Duration::from_secs(8)).unwrap();
@@ -1047,10 +1044,7 @@ mod tests {
 
     #[test]
     fn port_ready_is_success() {
-        if Command::new("python3").arg("--version").output().is_err() {
-            return; // 没有 python3 就跳过
-        }
-        let out = run("python3 -m http.server 31998 --bind 127.0.0.1", Some(31998), "/tmp").unwrap();
+        let out = run(&crate::testutil::listen_command(31998), Some(31998), "/tmp").unwrap();
         assert_eq!(out.level, "success");
         assert!(out.message.contains("已就绪"), "{}", out.message);
     }
