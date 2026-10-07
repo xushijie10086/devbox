@@ -227,7 +227,7 @@ fn kill_tree(root: u32) {
 }
 
 /// 收集 root 及其所有后代进程
-fn collect_descendants(sys: &System, root: u32) -> Vec<Pid> {
+pub(crate) fn collect_descendants(sys: &System, root: u32) -> Vec<Pid> {
     let root_pid = Pid::from_u32(root);
     let mut result = vec![root_pid];
     let mut frontier = vec![root_pid];

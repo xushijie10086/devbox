@@ -34,6 +34,7 @@ pub fn run() {
             commands::process::health_tick,
             // ports
             commands::ports::list_ports,
+            commands::ports::list_project_ports,
             commands::ports::kill_process,
             // hosts
             commands::hosts::get_hosts,

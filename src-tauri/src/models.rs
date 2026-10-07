@@ -91,6 +91,8 @@ pub struct PortInfo {
     pub process: String,
     pub protocol: String,
     pub address: String,
+    /// 关联的项目名；与任何项目无关时为 None
+    pub project: Option<String>,
 }
 
 /// /etc/hosts 中的一条记录
