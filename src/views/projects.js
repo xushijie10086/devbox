@@ -327,6 +327,16 @@ export function mount(root) {
     render();
   }
 
+  // 取走后端记录的「进程自己退出」通知并弹出（多个项目同时退出时合并成一条）
+  async function showExitEvents() {
+    let events = [];
+    try {
+      events = await api.takeExitEvents();
+    } catch (_) {}
+    if (events.length === 0) return;
+    toast(events.map((e) => `${e.name}（${e.ts}）：${e.message}`).join("\n\n"), "error");
+  }
+
   async function refreshBranches() {
     try {
       branches = await api.projectBranches();
@@ -861,6 +871,7 @@ export function mount(root) {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
       await refreshBranches(); // 在终端里切了分支，这里也能跟上
+      await showExitEvents(); // 启动确认之后才崩溃的项目，也要告诉用户原因
       render();
       renderGroupTools(); // 批量按钮的可用状态随运行状态变化
       await api.healthTick();

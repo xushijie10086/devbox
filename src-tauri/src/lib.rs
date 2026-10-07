@@ -36,6 +36,7 @@ pub fn run() {
             commands::process::restart_project,
             commands::process::project_statuses,
             commands::process::health_tick,
+            commands::process::take_exit_events,
             // git / 运行时版本
             commands::git::git_pull,
             commands::git::git_branches,

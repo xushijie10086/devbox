@@ -20,6 +20,7 @@ export const api = {
   restartProject: (id) => invoke("restart_project", { id }),
   projectStatuses: () => invoke("project_statuses"),
   healthTick: () => invoke("health_tick"),
+  takeExitEvents: () => invoke("take_exit_events"),
 
   // 端口
   listPorts: () => invoke("list_ports"),

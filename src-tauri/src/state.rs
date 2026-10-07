@@ -1,4 +1,4 @@
-use crate::models::{Config, LogLine};
+use crate::models::{Config, ExitEvent, LogLine};
 use std::collections::{HashMap, VecDeque};
 use std::process::Child;
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,8 @@ pub struct AppState {
     pub procs: Mutex<HashMap<String, RunningProc>>,
     /// project_id -> 日志缓冲（读线程写入，前端轮询读取）
     pub logs: Mutex<HashMap<String, Arc<Mutex<VecDeque<LogLine>>>>>,
+    /// 尚未被前端取走的进程退出通知
+    pub exit_events: Mutex<Vec<ExitEvent>>,
 }
 
 impl AppState {
@@ -33,6 +35,7 @@ impl AppState {
             config_path,
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
+            exit_events: Mutex::new(Vec::new()),
         }
     }
 

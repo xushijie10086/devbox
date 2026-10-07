@@ -89,6 +89,17 @@ pub struct ProjectStatus {
     pub port_up: Option<bool>,
 }
 
+/// 项目进程在「启动确认」之后才退出（崩溃等）时留给前端的通知
+#[derive(Serialize, Clone, Debug)]
+pub struct ExitEvent {
+    pub id: String,
+    pub name: String,
+    /// 退出发生的时间 HH:MM:SS
+    pub ts: String,
+    /// 原因 + 最后几行输出
+    pub message: String,
+}
+
 /// 启动结果：level 为 "success" 或 "warning"（失败走 Err，不在这里）
 #[derive(Serialize, Clone, Debug)]
 pub struct StartOutcome {

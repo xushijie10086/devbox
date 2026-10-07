@@ -1,4 +1,4 @@
-use crate::models::{LogLine, Project, ProjectStatus, StartOutcome};
+use crate::models::{ExitEvent, LogLine, Project, ProjectStatus, StartOutcome};
 use crate::state::{AppState, RunningProc, MAX_LOG_LINES};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
@@ -239,7 +239,7 @@ fn start_and_verify_with(
                 (None, Some(p)) => format!(
                     "进程在运行，但启动前端口 {p} 就已被占用，无法确认本项目是否就绪；若日志报端口冲突，请到「端口」页结束占用进程"
                 ),
-                (None, None) => "已启动（未配置端口，无法检测是否就绪，可查看日志）".to_string(),
+                (None, None) => "进程已启动，但没配置端口，无法确认是否真正就绪；如果之后崩溃会再提示，也可查看日志".to_string(),
             };
             push_system_log(state, id, &msg);
             return Ok(if watch_port.is_some() || port.is_some() {
@@ -275,7 +275,7 @@ fn finish_exited(
 
     use std::os::unix::process::ExitStatusExt;
     let reason = describe_exit(status.code(), status.signal());
-    let tail = tail_since_start(&state.log_buffer(id), 6);
+    let tail = tail_since_start(&state.log_buffer(id), TAIL_LINES);
     push_system_log(state, id, &format!("✖ 启动失败：{reason}"));
     let mut msg = format!("启动失败：{reason}");
     if !tail.is_empty() {
@@ -296,6 +296,24 @@ fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     }
 }
 
+/// 失败 / 退出提示里附带的输出行数
+const TAIL_LINES: usize = 8;
+
+/// 没有信息量的行：空行、只有 [ERROR] 这类日志级别前缀、纯分隔线
+/// （Maven 的失败输出里一大半是这种，会把真正的错误行挤出摘要）
+fn is_noise(line: &str) -> bool {
+    let t = line.trim();
+    let rest = match t.strip_prefix('[') {
+        Some(r) => match r.split_once(']') {
+            Some((level, after)) if level.chars().all(|c| c.is_ascii_alphabetic()) && level.len() <= 7 => after,
+            _ => t,
+        },
+        None => t,
+    };
+    let rest = rest.trim();
+    rest.is_empty() || rest.chars().all(|c| matches!(c, '-' | '=' | '_' | '*' | '#' | ' '))
+}
+
 /// 取本次启动以来最后 n 行 stdout / stderr 输出（不含系统消息），单行过长会截断
 fn tail_since_start(buf: &Arc<Mutex<VecDeque<LogLine>>>, n: usize) -> Vec<String> {
     let b = buf.lock().unwrap();
@@ -307,7 +325,7 @@ fn tail_since_start(buf: &Arc<Mutex<VecDeque<LogLine>>>, n: usize) -> Vec<String
             }
             continue;
         }
-        if l.text.trim().is_empty() {
+        if is_noise(&l.text) {
             continue;
         }
         let t: String = l.text.chars().take(200).collect();
@@ -349,19 +367,63 @@ pub fn stop_project_inner(id: &str, state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-/// 回收已经退出的进程（更新 procs 表）
+/// 回收已经退出的进程（更新 procs 表）。
+/// 用户主动停止的项目在 stop_project_inner 里已先从表中移除，不会走到这里；
+/// 走到这里的都是自己退出的：非 0 退出（崩溃等）会留下一条通知给前端。
 fn reap_dead(state: &AppState) {
-    let mut procs = state.procs.lock().unwrap();
-    let dead: Vec<String> = procs
-        .iter_mut()
-        .filter_map(|(id, rp)| match rp.child.try_wait() {
-            Ok(Some(_)) => Some(id.clone()),
-            _ => None,
-        })
-        .collect();
-    for id in dead {
-        procs.remove(&id);
+    let dead: Vec<(String, std::process::ExitStatus)> = {
+        let mut procs = state.procs.lock().unwrap();
+        let dead: Vec<_> = procs
+            .iter_mut()
+            .filter_map(|(id, rp)| match rp.child.try_wait() {
+                Ok(Some(st)) => Some((id.clone(), st)),
+                _ => None,
+            })
+            .collect();
+        for (id, _) in &dead {
+            procs.remove(id);
+        }
+        dead
+    };
+    for (id, status) in dead {
+        record_exit(state, &id, status);
     }
+}
+
+/// 记录一次自行退出：写入项目日志，非 0 退出时再生成前端通知
+fn record_exit(state: &AppState, id: &str, status: std::process::ExitStatus) {
+    use std::os::unix::process::ExitStatusExt;
+    if status.success() {
+        push_system_log(state, id, "进程已退出（退出码 0）");
+        return;
+    }
+    let reason = describe_exit(status.code(), status.signal());
+    push_system_log(state, id, &format!("✖ 进程已退出：{reason}"));
+
+    let tail = tail_since_start(&state.log_buffer(id), TAIL_LINES);
+    let mut message = format!("进程已退出：{reason}");
+    if !tail.is_empty() {
+        message.push_str("\n最后输出：\n");
+        message.push_str(&tail.join("\n"));
+    }
+    let name = get_project(state, id).map(|p| p.name).unwrap_or_else(|| id.to_string());
+    let mut events = state.exit_events.lock().unwrap();
+    events.push(ExitEvent {
+        id: id.to_string(),
+        name,
+        ts: chrono::Local::now().format("%H:%M:%S").to_string(),
+        message,
+    });
+    if events.len() > 50 {
+        events.remove(0); // 前端长时间没来取时，只保留最近的
+    }
+}
+
+/// 取走（并清空）尚未展示的进程退出通知；由前端定时轮询
+#[tauri::command]
+pub fn take_exit_events(state: State<AppState>) -> Vec<ExitEvent> {
+    reap_dead(state.inner()); // 保证刚退出的进程也能被及时发现
+    std::mem::take(&mut *state.exit_events.lock().unwrap())
 }
 
 fn get_project(state: &AppState, id: &str) -> Option<Project> {
@@ -469,6 +531,7 @@ mod tests {
             config_path: std::env::temp_dir().join("devbox-test-config.json"),
             procs: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
+            exit_events: Mutex::new(Vec::new()),
         }
     }
 
@@ -516,6 +579,88 @@ mod tests {
         }));
         let err = start_and_verify_with("t", &st, Duration::from_millis(500), Duration::from_secs(1)).unwrap_err();
         assert!(err.contains("Node 16.0.0") && err.contains("已不存在"), "{err}");
+    }
+
+    #[test]
+    fn noise_filter_keeps_the_real_error_line() {
+        assert!(is_noise(""));
+        assert!(is_noise("[ERROR] "));
+        assert!(is_noise("[INFO] ------------------------------------------------------------------------"));
+        assert!(is_noise("=========="));
+        assert!(!is_noise("[ERROR] No plugin found for prefix 'spring-boot' in the current project"));
+        assert!(!is_noise("[INFO] BUILD FAILURE"));
+        assert!(!is_noise("Error: Cannot find module 'express'"));
+        assert!(!is_noise("[1] something"), "方括号里不是日志级别时按正文处理");
+    }
+
+    #[test]
+    fn maven_style_failure_tail_contains_root_cause() {
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": "/tmp", "start_command": "x"
+        }));
+        let buf = st.log_buffer("t");
+        let push = |s: &str| push_log(&buf, "stdout", s.to_string());
+        push_log(&buf, "system", "▶ 启动: mvn spring-boot:run (pid 1)".into());
+        for m in ["ruoyi-common", "ruoyi-admin"] {
+            push(&format!("[INFO] {m} ........ SKIPPED"));
+        }
+        push("[INFO] ------------------------------------------------------------------------");
+        push("[INFO] BUILD FAILURE");
+        push("[INFO] ------------------------------------------------------------------------");
+        push("[ERROR] No plugin found for prefix 'spring-boot' in the current project");
+        push("[ERROR] ");
+        push("[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.");
+        push("[ERROR] Re-run Maven using the -X switch to enable full debug logging.");
+        push("[ERROR] ");
+        push("[ERROR] For more information about the errors and possible solutions, please read the following articles:");
+        let tail = tail_since_start(&buf, TAIL_LINES).join("\n");
+        assert!(tail.contains("No plugin found for prefix 'spring-boot'"), "{tail}");
+        assert!(!tail.contains("-----"), "分隔线应被过滤: {tail}");
+    }
+
+    #[test]
+    fn late_crash_after_start_is_reported_once() {
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "站群项目", "path": "/tmp",
+            "start_command": "echo '[ERROR] No plugin found' ; sleep 1; exit 4"
+        }));
+        // 确认窗口只有 0.2 秒：此时进程还活着，启动被报告为成功
+        let out = start_and_verify_with("t", &st, Duration::from_millis(200), Duration::from_secs(1)).unwrap();
+        assert_eq!(out.level, "success");
+        assert!(st.exit_events.lock().unwrap().is_empty(), "还没退出，不该有通知");
+
+        // 之后进程自己崩了：下一次回收时产生一条通知，包含原因和关键输出
+        std::thread::sleep(Duration::from_millis(1600));
+        reap_dead(&st);
+        let evs: Vec<ExitEvent> = st.exit_events.lock().unwrap().clone();
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        assert_eq!(evs[0].name, "站群项目");
+        assert!(evs[0].message.contains("退出码 4"), "{}", evs[0].message);
+        assert!(evs[0].message.contains("No plugin found"), "{}", evs[0].message);
+        // 再回收不会重复通知
+        reap_dead(&st);
+        assert_eq!(st.exit_events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn user_stop_and_clean_exit_do_not_notify() {
+        // 用户主动停止：不算崩溃
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": "/tmp", "start_command": "sleep 30"
+        }));
+        start_and_verify_with("t", &st, Duration::from_millis(200), Duration::from_secs(1)).unwrap();
+        stop_project_inner("t", &st).unwrap();
+        reap_dead(&st);
+        assert!(st.exit_events.lock().unwrap().is_empty());
+
+        // 退出码 0：只写日志，不弹窗
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": "/tmp", "start_command": "sleep 1; exit 0"
+        }));
+        start_and_verify_with("t", &st, Duration::from_millis(200), Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        reap_dead(&st);
+        assert!(st.exit_events.lock().unwrap().is_empty());
     }
 
     #[test]
