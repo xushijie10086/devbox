@@ -126,6 +126,7 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 /* 表格 */
 .table { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .trow { display: grid; grid-template-columns: 80px 1.2fr 1.2fr 90px 1.4fr 70px 90px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--border); gap: 10px; }
+.trow.ports { grid-template-columns: 80px 1.1fr 1fr 1.1fr 90px 1.3fr 70px 90px; }
 .trow.services { grid-template-columns: 1.5fr 100px 1fr 200px; }
 .trow:last-child { border-bottom: none; }
 .thead { background: var(--panel); color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
@@ -248,6 +249,7 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .tab-count { font-size: 11px; padding: 0 6px; border-radius: 10px; background: var(--panel-2); color: var(--dim); }
 .tab.active .tab-count { background: rgba(79,140,255,.18); color: #7fb0ff; }
+.port-tabs { margin-bottom: 12px; }
 .tab-add { padding: 8px 12px 9px; font-size: 15px; }
 .group-tools { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; flex-shrink: 0; }
 .tools-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }

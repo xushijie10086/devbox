@@ -40,6 +40,7 @@ pub fn list_ports() -> Result<Vec<PortInfo>, String> {
             protocol,
             address,
             project: None,
+            group: None,
         });
     }
 
@@ -159,22 +160,18 @@ fn attribute_ports(
     projects: &[Project],
     trees: &[(String, Vec<u32>)],
 ) -> Vec<PortInfo> {
-    let name_of = |id: &str| projects.iter().find(|p| p.id == id).map(|p| p.name.clone());
+    let by_id = |id: &str| projects.iter().find(|p| p.id == id);
     ports
         .into_iter()
         .filter_map(|mut info| {
             let owner = trees
                 .iter()
                 .find(|(_, pids)| pids.contains(&info.pid))
-                .and_then(|(id, _)| name_of(id))
-                .or_else(|| {
-                    projects
-                        .iter()
-                        .find(|p| p.port == Some(info.port))
-                        .map(|p| p.name.clone())
-                });
-            owner.map(|name| {
-                info.project = Some(name);
+                .and_then(|(id, _)| by_id(id))
+                .or_else(|| projects.iter().find(|p| p.port == Some(info.port)));
+            owner.map(|p| {
+                info.project = Some(p.name.clone());
+                info.group = p.group.clone();
                 info
             })
         })
@@ -292,7 +289,25 @@ mod tests {
             protocol: "TCP".into(),
             address: format!("*:{port}"),
             project: None,
+            group: None,
         }
+    }
+
+    #[test]
+    fn ports_carry_the_group_of_their_project() {
+        let mut a = project("a", "前端", Some(3000));
+        a.group = Some("站群".into());
+        let b = project("b", "后端", Some(8080)); // 未分组
+        let out = attribute_ports(vec![port(3000, 1), port(8080, 2)], &[a, b], &[]);
+        assert_eq!(
+            out.iter().map(|p| (p.port, p.group.as_deref())).collect::<Vec<_>>(),
+            [(3000, Some("站群")), (8080, None)]
+        );
+        // 进程树归属：端口号不同也跟着所属项目走
+        let mut c = project("c", "网关", None);
+        c.group = Some("网关组".into());
+        let out = attribute_ports(vec![port(9000, 7)], &[c], &[("c".into(), vec![7])]);
+        assert_eq!((out[0].project.as_deref(), out[0].group.as_deref()), (Some("网关"), Some("网关组")));
     }
 
     #[test]
@@ -320,7 +335,7 @@ mod tests {
     // ---------- 端口预检 ----------
 
     fn info(port: u16, pid: u32, process: &str) -> PortInfo {
-        PortInfo { port, pid, process: process.into(), protocol: "TCP".into(), address: format!("*:{port}"), project: None }
+        PortInfo { port, pid, process: process.into(), protocol: "TCP".into(), address: format!("*:{port}"), project: None, group: None }
     }
 
     #[test]

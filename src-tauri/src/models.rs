@@ -169,6 +169,9 @@ pub struct PortInfo {
     pub address: String,
     /// 关联的项目名；与任何项目无关时为 None
     pub project: Option<String>,
+    /// 关联项目所属的项目组；项目未分组或与任何项目无关时为 None
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// /etc/hosts 中的一条记录
