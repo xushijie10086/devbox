@@ -132,10 +132,13 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
         return Err(format!("工作目录不存在或不是目录：{}", project.path));
     }
 
+    // 选定的 Node / JDK 版本：写成命令前缀，保证在登录 shell 重排 PATH 之后才生效
+    let prelude = crate::commands::runtime::shell_prelude(&project)?;
+
     let mut cmd = Command::new("/bin/sh");
     cmd.current_dir(&project.path)
         .arg("-lc")
-        .arg(&project.start_command)
+        .arg(format!("{prelude}{}", project.start_command))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -151,6 +154,9 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
 
     let buf = state.log_buffer(id);
     push_log(&buf, "system", format!("▶ 启动: {} (pid {pid})", project.start_command));
+    if let Some(rt) = crate::commands::runtime::describe(&project) {
+        push_log(&buf, "system", format!("使用指定版本: {rt}"));
+    }
 
     if let Some(out) = child.stdout.take() {
         spawn_reader(out, "stdout", buf.clone());
@@ -322,11 +328,13 @@ pub fn stop_project_inner(id: &str, state: &AppState) -> Result<(), String> {
 
     // 有自定义停止命令则优先执行
     if let Some(project) = get_project(state, id) {
-        if let Some(stop_cmd) = project.stop_command.filter(|s| !s.trim().is_empty()) {
+        // 停止命令（如 ./gradlew --stop）也要在同一套 Node / JDK 下执行
+        let prelude = crate::commands::runtime::shell_prelude(&project).unwrap_or_default();
+        if let Some(stop_cmd) = project.stop_command.clone().filter(|s| !s.trim().is_empty()) {
             let _ = Command::new("/bin/sh")
                 .current_dir(&project.path)
                 .arg("-lc")
-                .arg(&stop_cmd)
+                .arg(format!("{prelude}{stop_cmd}"))
                 .status();
         }
     }
@@ -368,7 +376,7 @@ fn get_project(state: &AppState, id: &str) -> Option<Project> {
 }
 
 /// 结束进程树：TERM 给整棵树，KILL 兜底
-fn kill_tree(root: u32) {
+pub(crate) fn kill_tree(root: u32) {
     let mut sys = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::new()),
     );
@@ -471,6 +479,43 @@ mod tests {
         let r = start_and_verify_with("t", &st, Duration::from_millis(800), Duration::from_secs(5));
         let _ = stop_project_inner("t", &st);
         r
+    }
+
+    #[test]
+    fn selected_node_and_jdk_are_used_when_starting() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("devbox-start-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mk = |rel: &str, body: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        mk("node18/bin/node", "echo 项目用的是-node-18.19.1");
+        mk("jdk17/bin/java", "echo 项目用的是-java-home=$JAVA_HOME");
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": "/tmp", "start_command": "node -v; java -version",
+            "node": {"version": "18.19.1", "path": d.join("node18/bin").to_string_lossy()},
+            "java": {"version": "17.0.9", "path": d.join("jdk17").to_string_lossy()},
+        }));
+        let out = start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(3)).unwrap();
+        assert_eq!(out.level, "success", "{}", out.message);
+        let logs: Vec<String> = st.log_buffer("t").lock().unwrap().iter().map(|l| l.text.clone()).collect();
+        let all = logs.join("\n");
+        assert!(all.contains("项目用的是-node-18.19.1"), "{all}");
+        assert!(all.contains(&format!("项目用的是-java-home={}", d.join("jdk17").display())), "{all}");
+        assert!(all.contains("使用指定版本: Node 18.19.1 · JDK 17.0.9"), "{all}");
+    }
+
+    #[test]
+    fn missing_selected_runtime_blocks_start_with_clear_message() {
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": "/tmp", "start_command": "true",
+            "node": {"version": "16.0.0", "path": "/no/such/bin"},
+        }));
+        let err = start_and_verify_with("t", &st, Duration::from_millis(500), Duration::from_secs(1)).unwrap_err();
+        assert!(err.contains("Node 16.0.0") && err.contains("已不存在"), "{err}");
     }
 
     #[test]

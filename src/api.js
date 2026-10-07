@@ -42,6 +42,10 @@ export const api = {
   clearLogs: (projectId) => invoke("clear_logs", { projectId }),
 
 
+  // 一键拉取代码 / 运行时版本（Node、JDK）
+  gitPull: (id) => invoke("git_pull", { id }),
+  listRuntimes: () => invoke("list_runtimes"),
+
   // 快捷入口
   openInEditor: (path, editor) => invoke("open_in_editor", { path, editor }),
   openUrl: (url) => invoke("open_url", { url }),

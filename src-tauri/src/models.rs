@@ -34,6 +34,20 @@ pub struct Project {
     /// 所属项目组（项目库里的 tab 分类）；None 表示未分组
     #[serde(default)]
     pub group: Option<String>,
+    /// 指定的 Node 版本；None 表示用系统默认
+    #[serde(default)]
+    pub node: Option<RuntimeChoice>,
+    /// 指定的 JDK 版本；None 表示用系统默认
+    #[serde(default)]
+    pub java: Option<RuntimeChoice>,
+}
+
+/// 项目选定的运行时版本。version 仅用于展示；真正生效的是 path：
+/// Node 为其 bin 目录，JDK 为 JAVA_HOME。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RuntimeChoice {
+    pub version: String,
+    pub path: String,
 }
 
 fn default_kind() -> String {

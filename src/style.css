@@ -256,7 +256,7 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .ptable { overflow: visible; }
 .prow {
   display: grid; align-items: center; gap: 10px; padding: 9px 12px 9px 8px;
-  grid-template-columns: 22px minmax(160px, 1.7fr) minmax(90px, .9fr) 70px minmax(88px, .5fr) 330px; /* 末列定宽，各行才能对齐 */
+  grid-template-columns: 22px minmax(160px, 1.7fr) minmax(90px, .9fr) 70px minmax(88px, .5fr) 240px; /* 末列定宽，各行才能对齐 */
   border-bottom: 1px solid var(--border); background: transparent; cursor: grab;
 }
 .plist .prow:last-child { border-bottom: none; }
@@ -280,9 +280,21 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 .cmd-cell code { color: #a9d0ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .port-cell { font-size: 12.5px; color: var(--dim); font-family: "SF Mono", ui-monospace, monospace; white-space: nowrap; }
 .meta-cell { display: flex; flex-direction: column; gap: 1px; font-size: 11.5px; color: var(--dim); white-space: nowrap; }
-.actions-cell { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.run-group { display: flex; gap: 5px; min-width: 124px; justify-content: flex-end; }
-.quick-group { display: flex; align-items: center; gap: 1px; }
+/* 操作列固定上下两排：上排 启动/停止/重启，下排 快捷图标。按钮一律不收缩、不折行，
+   这样运行中「停止 + 重启」并排时也不会被挤压变形（macOS 字体比容器里的宽） */
+.actions-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.run-group { display: flex; gap: 5px; min-height: 26px; }
+.run-group button, .prow .primary-btn { flex: none; white-space: nowrap; }
+.quick-group { display: flex; align-items: center; gap: 1px; flex: none; }
+.icon-btn.busy { opacity: .5; cursor: progress; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .2; } }
+.rt-chip {
+  flex-shrink: 0; font-size: 10.5px; padding: 0 7px; border-radius: 20px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border); color: var(--dim);
+}
+.rt-chip:hover { color: var(--text); border-color: var(--accent); }
+.rt-chip.set { color: #7fb0ff; border-color: rgba(79,140,255,.45); background: rgba(79,140,255,.08); }
+.form-row small { font-size: 11.5px; line-height: 1.4; }
 .prow .icon-btn { width: 28px; height: 28px; }
 .prow button { cursor: pointer; }
 .prow button:disabled { cursor: progress; }
@@ -296,10 +308,8 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 /* 原位占位块，指示松手后会落到哪里 */
 .row-placeholder { border: 1.5px dashed var(--accent); border-radius: 8px; background: rgba(79,140,255,.07); margin: 2px 6px; }
 
-/* 窄窗口：隐藏运行详情列，操作列改成上下两排，保证按钮完整可见 */
-@media (max-width: 1090px) {
-  .prow { grid-template-columns: 22px minmax(130px, 1.4fr) minmax(80px, .9fr) 66px 204px; }
+/* 窄窗口：隐藏运行详情列 */
+@media (max-width: 1010px) {
+  .prow { grid-template-columns: 22px minmax(130px, 1.4fr) minmax(80px, .9fr) 66px 240px; }
   .prow > .meta-cell { display: none; }
-  .actions-cell { flex-direction: column; align-items: flex-end; gap: 3px; }
-  .run-group { min-width: 0; }
 }

@@ -23,6 +23,7 @@ export function mount(root) {
   let timer = null;
   let drag = null; // 拖拽上下文，见 startDrag
   const starting = new Set(); // 正在等待启动结果的项目 id
+  const pulling = new Set(); // 正在拉取代码的项目 id
 
   const tabsEl = el("div", { class: "tabs" });
   const groupTools = el("div", { class: "group-tools" });
@@ -350,7 +351,7 @@ export function mount(root) {
 
     const nameCell = el("div", { class: "name-cell" }, [
       el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
-      el("div", { class: "sub-line" }, [groupBadge, el("span", { class: "row-path", title: p.path }, p.path)]),
+      el("div", { class: "sub-line" }, [groupBadge, ...runtimeChips(p), el("span", { class: "row-path", title: p.path }, p.path)]),
     ]);
 
     const cmdCell = el("div", { class: "cmd-cell", title: p.start_command }, [
@@ -385,6 +386,7 @@ export function mount(root) {
         p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
         iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
         iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
+        iconBtn("pull", pulling.has(p.id) ? "正在拉取代码…" : "拉取最新代码（git pull）", () => pull(p), pulling.has(p.id) ? "busy" : ""),
         iconBtn("logsView", "查看日志", () => openLogModal(p)), // 进程退出后日志仍保留，便于排查启动失败
         iconBtn("edit", "编辑", () => openEditor(p)),
         iconBtn("trash", "删除", () => removeProject(p), "danger"),
@@ -403,6 +405,102 @@ export function mount(root) {
     });
 
     return row;
+  }
+
+  // 一键拉取代码：git pull --ff-only，结果（已是最新 / 更新了几个提交 / 失败原因）用提示告知
+  async function pull(p) {
+    if (pulling.has(p.id)) return;
+    pulling.add(p.id);
+    render();
+    toast(`${p.name}：正在拉取代码…`, "info");
+    try {
+      const out = await api.gitPull(p.id);
+      toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+    } finally {
+      pulling.delete(p.id);
+      render();
+    }
+  }
+
+  // 运行时版本标签：前端项目显示 Node、后端项目显示 JDK；「其它」类型只在设置过时显示。点击可切换。
+  function runtimeChips(p) {
+    const kinds = [];
+    if (p.kind === "frontend" || p.node) kinds.push("node");
+    if (p.kind === "backend" || p.java) kinds.push("java");
+    return kinds.map((k) => {
+      const cur = p[k];
+      const label = k === "node" ? "Node" : "JDK";
+      return el("button", {
+        class: `rt-chip${cur ? " set" : ""}`,
+        title: cur ? `${label} ${cur.version}（点击切换）` : `使用系统默认 ${label}（点击切换版本）`,
+        onclick: () => openRuntimeDialog(p, k),
+      }, cur ? `${label} ${cur.version}` : `${label} 默认`);
+    });
+  }
+
+  /** 构造某种运行时的版本下拉；已选版本若本机检测不到（被卸载）也保留并标出 */
+  function runtimeSelect(kind, list, current) {
+    const label = kind === "node" ? "Node" : "JDK";
+    const options = [el("option", { value: "" }, `系统默认（不指定）`)];
+    const known = new Set();
+    for (const r of list) {
+      known.add(r.path);
+      options.push(el("option", {
+        value: r.path,
+        selected: current?.path === r.path ? "selected" : false,
+      }, `${label} ${r.version} · ${r.source}`));
+    }
+    if (current && !known.has(current.path)) {
+      options.push(el("option", { value: current.path, selected: "selected" }, `⚠ ${label} ${current.version}（本机未检测到，可能已卸载）`));
+    }
+    const sel = el("select", {}, options);
+    const emptyHint = list.length === 0 ? `没有检测到本机安装的 ${label}（支持 ${kind === "node" ? "nvm / fnm / Volta / asdf / Homebrew" : "系统 JVM / SDKMAN / asdf / Homebrew"}）` : null;
+    return {
+      sel, emptyHint,
+      /** 当前选择对应的 {version, path}；选「系统默认」为 null */
+      value() {
+        if (!sel.value) return null;
+        if (current?.path === sel.value) return current;
+        const r = list.find((x) => x.path === sel.value);
+        return r ? { version: r.version, path: r.path } : null;
+      },
+    };
+  }
+
+  async function loadRuntimes() {
+    try {
+      return await api.listRuntimes();
+    } catch (e) {
+      toast(`检测 Node / JDK 版本失败：${String(e)}`, "error");
+      return { node: [], java: [] };
+    }
+  }
+
+  // 在列表里直接切换某个项目的 Node / JDK 版本
+  async function openRuntimeDialog(p, kind) {
+    const rts = await loadRuntimes();
+    const label = kind === "node" ? "Node" : "JDK";
+    const rs = runtimeSelect(kind, rts[kind], p[kind]);
+    const body = el("div", { class: "form" }, [
+      el("label", { class: "form-row" }, [el("span", {}, `${label} 版本`), rs.sel]),
+      el("div", { class: "note" }, rs.emptyHint || `选定后，启动「${p.name}」时会优先使用该版本${kind === "java" ? "（同时设置 JAVA_HOME）" : ""}。`),
+    ]);
+    showModal(`切换 ${label} 版本 · ${p.name}`, body, async () => {
+      const next = rs.value();
+      try {
+        await api.saveProject({ ...p, [kind]: next });
+      } catch (e) {
+        toast(String(e), "error");
+        return false;
+      }
+      const running = statuses[p.id]?.running;
+      const what = next ? `${label} ${next.version}` : `系统默认 ${label}`;
+      toast(running ? `已切换为 ${what}；项目正在运行，需点「重启」才会生效` : `已切换为 ${what}`, running ? "warning" : "success");
+      await refresh();
+      return true;
+    });
   }
 
   // 启动 / 重启并反馈结果：成功、成功但有提醒、失败（含原因）。
@@ -468,8 +566,9 @@ export function mount(root) {
     interval = setInterval(pull, 1000);
   }
 
-  function openEditor(p) {
+  async function openEditor(p) {
     const isNew = !p;
+    const rts = await loadRuntimes();
     const data = p
       ? { ...p, env: p.env || {} }
       : { id: "", name: "", path: "", kind: "frontend", start_command: "", stop_command: "", port: "", url: "", editor: "code", auto_restart: false, env: {},
@@ -490,6 +589,24 @@ export function mount(root) {
       el("option", { value: "" }, "未分组"),
       ...groups.map((g) => el("option", { value: g, selected: data.group === g ? "selected" : false }, g)),
     ]);
+
+    // 前端项目选 Node，后端项目选 JDK，「其它」两者都可选
+    const nodeRs = runtimeSelect("node", rts.node, data.node);
+    const javaRs = runtimeSelect("java", rts.java, data.java);
+    const rtRow = (label, rs) =>
+      el("label", { class: "form-row" }, [
+        el("span", {}, label),
+        rs.sel,
+        rs.emptyHint && el("small", { class: "dim" }, rs.emptyHint),
+      ]);
+    const nodeRow = rtRow("Node 版本", nodeRs);
+    const javaRow = rtRow("JDK 版本", javaRs);
+    const syncRuntimeRows = () => {
+      nodeRow.style.display = kindSel.value === "backend" ? "none" : "";
+      javaRow.style.display = kindSel.value === "frontend" ? "none" : "";
+    };
+    kindSel.addEventListener("change", syncRuntimeRows);
+    syncRuntimeRows();
 
     const autoRestart = el("input", { type: "checkbox", name: "auto_restart" });
     if (data.auto_restart) autoRestart.checked = true;
@@ -540,6 +657,8 @@ export function mount(root) {
       el("label", { class: "form-row" }, [el("span", {}, "类型"), kindSel]),
       el("label", { class: "form-row" }, [el("span", {}, "所属项目组"), groupSel]),
       cmdRow,
+      nodeRow,
+      javaRow,
       f("stop_command", "停止命令(可选)", "留空则由 DevBox 结束进程树"),
       f("port", "端口(可选)", "3000", "number"),
       f("url", "打开地址(可选)", "http://localhost:3000"),
@@ -591,6 +710,9 @@ export function mount(root) {
         path: get("path"),
         kind: kindSel.value,
         group: groupSel.value || null,
+        // 当前类型下看不到的那一项视为不指定，避免残留的旧选择悄悄生效
+        node: nodeRow.style.display === "none" ? null : nodeRs.value(),
+        java: javaRow.style.display === "none" ? null : javaRs.value(),
         start_command: get("start_command"),
         stop_command: get("stop_command") || null,
         port: get("port") ? Number(get("port")) : null,

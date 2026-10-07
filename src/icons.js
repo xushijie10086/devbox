@@ -32,6 +32,9 @@ const PATHS = {
   // 卡片：在访达显示（文件夹）
   folder:
     '<path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>',
+  // 卡片：拉取最新代码（向下的箭头落入托盘）
+  pull:
+    '<path d="M12 4v11"/><path d="M7.5 11 12 15.5 16.5 11"/><path d="M5 19.5h14"/>',
   // 卡片：查看日志（列表）
   logsView:
     '<path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1.1"/><circle cx="4" cy="12" r="1.1"/><circle cx="4" cy="18" r="1.1"/>',
