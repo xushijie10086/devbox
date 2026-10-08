@@ -35,3 +35,19 @@ test("tauri crate 与 @tauri-apps/api、@tauri-apps/cli 的主.次版本一致",
   assert.equal(majorMinor(api), majorMinor(rust), `@tauri-apps/api 与 tauri crate 版本不一致：${hint}`);
   assert.equal(majorMinor(cli), majorMinor(rust), `@tauri-apps/cli 与 tauri crate 版本不一致：${hint}`);
 });
+
+test("应用自身的版本号在 package.json / tauri.conf.json / Cargo.toml / 两个锁文件里一致", () => {
+  const read = (f) => readFileSync(join(root, f), "utf8");
+  const pkg = JSON.parse(read("package.json")).version;
+  const found = {
+    "package.json": pkg,
+    "package-lock.json": JSON.parse(read("package-lock.json")).version,
+    "package-lock.json (packages[''])": JSON.parse(read("package-lock.json")).packages[""].version,
+    "tauri.conf.json": JSON.parse(read("src-tauri/tauri.conf.json")).version,
+    "Cargo.toml": read("src-tauri/Cargo.toml").match(/^version = "([^"]+)"/m)?.[1],
+    "Cargo.lock": crateVersion(read("src-tauri/Cargo.lock"), "devbox"),
+  };
+  for (const [file, v] of Object.entries(found)) {
+    assert.equal(v, pkg, `发布前要把所有地方改成同一个版本号：${file} 是 ${v}，package.json 是 ${pkg}`);
+  }
+});
