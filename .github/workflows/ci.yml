@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # 也可以在 Actions 页面手动运行
+
+# 同一分支上有新提交时，取消还在跑的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # 固定 Rust 版本，避免 clippy 随新版本新增规则而让 CI 无故变红；升级时在这里改一处
+  RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  # 前端：纯逻辑测试（含 Rust / npm 的 Tauri 版本一致性检查）、构建、MCP 适配器语法
+  frontend:
+    name: 前端测试与构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            devbox-mcp/package-lock.json
+      - run: npm ci
+      - name: 测试
+        run: npm test
+      - name: 构建
+        run: npm run build
+      - name: MCP 适配器
+        working-directory: devbox-mcp
+        run: |
+          npm ci
+          node --check index.js
+
+  # Rust：clippy（警告即失败）+ 单元测试。
+  # DevBox 只面向 macOS，所以 macOS 是主力；Linux 同时跑一遍，能更早暴露平台相关的写法。
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Linux 构建依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf lsof
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # tauri-build 要求前端产物目录存在；测试和 clippy 本身用不到里面的内容
+      - run: mkdir -p dist
+      - name: clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: 单元测试
+        working-directory: src-tauri
+        run: cargo test --lib --locked
+
+  # 整个应用能否编译打包（不生成安装包，只验证前端 + Rust 能一起构建）
+  build:
+    name: 应用构建 (macOS)
+    runs-on: macos-latest
+    needs: [frontend, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run tauri -- build --debug --no-bundle

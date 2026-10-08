@@ -31,22 +31,39 @@ pub struct Project {
     /// 崩溃后是否自动重启
     #[serde(default)]
     pub auto_restart: bool,
+    /// 所属项目组（项目库里的 tab 分类）；None 表示未分组
+    #[serde(default)]
+    pub group: Option<String>,
+    /// 指定的 Node 版本；None 表示用系统默认
+    #[serde(default)]
+    pub node: Option<RuntimeChoice>,
+    /// 指定的 JDK 版本；None 表示用系统默认
+    #[serde(default)]
+    pub java: Option<RuntimeChoice>,
+    /// 启动前需要先就绪的项目 id（如后端依赖数据库项目，前端依赖后端）
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+}
+
+/// 一个运行中项目进程的记录
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProcRecord {
+    pub id: String,
+    pub pid: u32,
+    /// 进程启动时间（自 epoch 的秒数）。用来确认「这个 pid 还是当初那个进程」，防止 pid 被复用后误杀
+    pub start_time: u64,
+}
+
+/// 项目选定的运行时版本。version 仅用于展示；真正生效的是 path：
+/// Node 为其 bin 目录，JDK 为 JAVA_HOME。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RuntimeChoice {
+    pub version: String,
+    pub path: String,
 }
 
 fn default_kind() -> String {
     "other".to_string()
-}
-
-/// 启动组：一键拉起一批项目 + 一批 brew 服务
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Profile {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub project_ids: Vec<String>,
-    /// 需要一起启动的 brew 服务名，例如 ["mysql", "redis"]
-    #[serde(default)]
-    pub service_names: Vec<String>,
 }
 
 /// 持久化到磁盘的配置
@@ -54,8 +71,20 @@ pub struct Profile {
 pub struct Config {
     #[serde(default)]
     pub projects: Vec<Project>,
+    /// 项目组列表（决定 tab 的顺序，也允许存在暂时没有项目的空组）
     #[serde(default)]
-    pub profiles: Vec<Profile>,
+    pub project_groups: Vec<String>,
+    /// 最近一次记录到的「正在运行的项目 id」。应用退出（含被强杀 / 崩溃）后，
+    /// 下次启动据此提示是否恢复
+    #[serde(default)]
+    pub last_running: Vec<String>,
+    /// 运行中项目的进程记录（pid + 进程启动时间）。应用被强杀 / 崩溃时，项目进程会成为孤儿继续跑，
+    /// 下次启动据此（pid 和启动时间都对得上才算）找到并清理它们
+    #[serde(default)]
+    pub last_procs: Vec<ProcRecord>,
+    /// 关闭系统通知（默认开启，所以字段取反，缺省即开启）
+    #[serde(default)]
+    pub mute_notifications: bool,
 }
 
 /// 自动探测到的项目信息（用于表单一键填充）
@@ -68,6 +97,23 @@ pub struct DetectedProject {
     pub url: Option<String>,
     /// 面向用户的简短说明，例如"已根据 package.json 自动填充"
     pub summary: String,
+    /// 项目声明的 Node 版本要求，以及本机能否满足
+    pub node: Option<RuntimeSuggestion>,
+    /// 项目声明的 JDK 版本要求，以及本机能否满足
+    pub java: Option<RuntimeSuggestion>,
+    /// 需要提醒用户注意的事项（如多模块 Maven 项目的启动目录）
+    pub notes: Vec<String>,
+}
+
+/// 项目对运行时版本的要求，以及在本机已安装版本里匹配到的结果
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct RuntimeSuggestion {
+    /// 项目声明的要求原文，如 "20"、">=18"、"1.8"
+    pub wanted: String,
+    /// 来自哪个文件，如 ".nvmrc"、"pom.xml"
+    pub source: String,
+    /// 本机匹配到的版本；None 表示本机没有满足要求的版本
+    pub matched: Option<RuntimeChoice>,
 }
 
 /// 项目的运行时状态
@@ -81,6 +127,36 @@ pub struct ProjectStatus {
     pub uptime_secs: Option<u64>,
     /// 期望端口是否已监听
     pub port_up: Option<bool>,
+    /// 正在运行的脚本任务名（install / build 等），没有则为 None
+    pub job: Option<String>,
+    pub job_secs: Option<u64>,
+}
+
+/// 项目进程在「启动确认」之后才退出（崩溃等）时留给前端的通知
+#[derive(Serialize, Clone, Debug)]
+pub struct ExitEvent {
+    pub id: String,
+    pub name: String,
+    /// 退出发生的时间 HH:MM:SS
+    pub ts: String,
+    /// 原因 + 最后几行输出
+    pub message: String,
+}
+
+/// 启动结果：level 为 "success" 或 "warning"（失败走 Err，不在这里）
+#[derive(Serialize, Clone, Debug)]
+pub struct StartOutcome {
+    pub level: &'static str,
+    pub message: String,
+}
+
+impl StartOutcome {
+    pub fn success(message: String) -> Self {
+        Self { level: "success", message }
+    }
+    pub fn warning(message: String) -> Self {
+        Self { level: "warning", message }
+    }
 }
 
 /// 端口占用信息（来自 lsof）
@@ -91,6 +167,11 @@ pub struct PortInfo {
     pub process: String,
     pub protocol: String,
     pub address: String,
+    /// 关联的项目名；与任何项目无关时为 None
+    pub project: Option<String>,
+    /// 关联项目所属的项目组；项目未分组或与任何项目无关时为 None
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// /etc/hosts 中的一条记录
@@ -116,6 +197,8 @@ pub struct ServiceInfo {
 /// 单行日志
 #[derive(Serialize, Clone, Debug)]
 pub struct LogLine {
+    /// 单调递增的序号（每个项目内），前端据此只拉取新增的行
+    pub seq: u64,
     pub ts: String,
     /// "stdout" | "stderr" | "system"
     pub stream: String,

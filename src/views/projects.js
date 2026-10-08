@@ -1,6 +1,14 @@
 import { api } from "../api.js";
-import { el, toast, guard, fmtUptime, confirmDialog } from "../ui.js";
+import { el, toast, guard, fmtUptime, confirmDialog, choiceDialog, summarizeStart, summarizePull } from "../ui.js";
 import { icon } from "../icons.js";
+import { createLogView } from "../logview.js";
+
+// 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
+const TAB_ALL = "__all__";
+const TAB_NONE = "__none__";
+
+// 记住上次停留的 tab（视图重新挂载、点「刷新」后仍停在原处）
+let activeTab = TAB_ALL;
 
 // 生成一个带 SVG 图标的操作按钮
 function iconBtn(name, title, onclick, extraClass = "") {
@@ -11,37 +19,228 @@ function iconBtn(name, title, onclick, extraClass = "") {
 
 export function mount(root) {
   let projects = [];
+  let groups = [];
   let statuses = {};
   let timer = null;
   let drag = null; // 拖拽上下文，见 startDrag
+  const starting = new Set(); // 正在等待启动结果的项目 id
+  const pulling = new Set(); // 正在拉取代码的项目 id
+  let branches = {}; // 项目 id -> { name, detached }，只含 git 项目
+  let gitStatus = {}; // 项目 id -> { ahead, behind, dirty, has_upstream }（后台每 20 秒刷新）
 
-  const list = el("div", { class: "card-grid" });
-  const header = el("div", { class: "view-header" }, [
-    el("h1", {}, "项目"),
-    el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
+  const tabsEl = el("div", { class: "tabs" });
+  const groupTools = el("div", { class: "group-tools" });
+  const header = el("div", { class: "sticky-header" }, [
+    el("div", { class: "view-header" }, [
+      el("h1", {}, "项目库"),
+      el("button", { class: "primary-btn", onclick: () => openEditor() }, "+ 新增项目"),
+    ]),
+    el("div", { class: "tabs-bar" }, [tabsEl, groupTools]),
   ]);
-  root.append(header, list);
+  const thead = el("div", { class: "prow prow-head" }, [
+    el("span", {}), el("span", {}, "项目"), el("span", {}, "启动命令"),
+    el("span", {}, "端口"), el("span", { class: "meta-cell" }, "运行"), el("span", { class: "head-actions" }, "操作"),
+  ]);
+  const list = el("div", { class: "plist" });
+  const table = el("div", { class: "table ptable" }, [thead, list]);
+  root.append(header, table);
+
+  // ---------- 分组 / tab ----------
+
+  const ungrouped = () => projects.filter((p) => !p.group);
+  const inGroup = (g) => projects.filter((p) => p.group === g);
+
+  /** 当前 tab 下要显示的项目（保持全局顺序） */
+  function visibleProjects() {
+    if (activeTab === TAB_ALL) return projects;
+    if (activeTab === TAB_NONE) return ungrouped();
+    return inGroup(activeTab);
+  }
+
+  /** 当前 tab 的名称，用于提示语 */
+  const tabLabel = () => (activeTab === TAB_ALL ? "全部项目" : activeTab === TAB_NONE ? "未分组" : activeTab);
+
+  function renderTabs() {
+    // 当前 tab 已不存在（分组被删 / 未分组已空）时回到「全部」
+    const exists =
+      activeTab === TAB_ALL ||
+      (activeTab === TAB_NONE && ungrouped().length > 0) ||
+      groups.includes(activeTab);
+    if (!exists) activeTab = TAB_ALL;
+
+    tabsEl.innerHTML = "";
+    const addTab = (id, label, count) => {
+      const t = el("button", { class: `tab${id === activeTab ? " active" : ""}`, "data-tab": id, onclick: () => selectTab(id) }, [
+        el("span", {}, label),
+        el("span", { class: "tab-count" }, String(count)),
+      ]);
+      tabsEl.append(t);
+    };
+    addTab(TAB_ALL, "全部", projects.length);
+    for (const g of groups) addTab(g, g, inGroup(g).length);
+    if (ungrouped().length > 0 && groups.length > 0) addTab(TAB_NONE, "未分组", ungrouped().length);
+    tabsEl.append(el("button", { class: "tab tab-add", title: "新增项目组", onclick: () => openGroupDialog() }, "＋"));
+
+    renderGroupTools();
+  }
+
+  function selectTab(id) {
+    if (drag) return;
+    activeTab = id;
+    renderTabs();
+    render();
+  }
+
+  /** 右侧：当前 tab 的批量操作 + 分组管理 */
+  function renderGroupTools() {
+    groupTools.innerHTML = "";
+    const rows = visibleProjects();
+    const runningN = rows.filter((p) => statuses[p.id]?.running).length;
+    const idle = rows.filter((p) => !statuses[p.id]?.running && !starting.has(p.id));
+    const scope = activeTab === TAB_ALL ? "全部" : "本组";
+
+    const startAll = el("button", {
+      class: "run-btn sm", disabled: idle.length === 0 ? "disabled" : false,
+      title: idle.length ? `启动${tabLabel()}里未运行的 ${idle.length} 个项目` : "没有可启动的项目",
+      onclick: () => startMany(idle),
+    }, `▶ ${scope}启动`);
+    const stopAll = el("button", {
+      class: "danger-btn sm", disabled: runningN === 0 ? "disabled" : false,
+      title: runningN ? `停止${tabLabel()}里运行中的 ${runningN} 个项目` : "没有运行中的项目",
+      onclick: () => stopMany(rows.filter((p) => statuses[p.id]?.running)),
+    }, `■ ${scope}停止`);
+    const gitRows = rows.filter((p) => branches[p.id]);
+    const pullAll = el("button", {
+      class: "ghost-btn sm",
+      disabled: gitRows.length === 0 || gitRows.every((p) => pulling.has(p.id)) ? "disabled" : false,
+      title: gitRows.length ? `对${tabLabel()}里 ${gitRows.length} 个 git 项目依次执行 git pull（只快进）` : "这里没有 git 项目",
+      onclick: () => pullMany(gitRows),
+    }, `⬇ ${scope}拉取`);
+    groupTools.append(startAll, stopAll, pullAll);
+
+    if (groups.includes(activeTab)) {
+      groupTools.append(
+        el("span", { class: "tools-sep" }),
+        iconBtn("edit", "重命名分组", () => openGroupDialog(activeTab)),
+        iconBtn("trash", "删除分组（项目保留，回到未分组）", () => removeGroup(activeTab), "danger"),
+      );
+    }
+  }
+
+  /** 新增 / 重命名项目组 */
+  function openGroupDialog(oldName) {
+    const input = el("input", { type: "text", placeholder: "例如：后端服务", value: oldName ?? "", maxlength: "30" });
+    const form = el("div", { class: "form" }, [el("label", { class: "form-row" }, [el("span", {}, "分组名称"), input])]);
+    showModal(oldName ? "重命名分组" : "新增项目组", form, async () => {
+      const name = input.value.trim();
+      if (!name) {
+        toast("分组名称不能为空", "error");
+        return false;
+      }
+      try {
+        const saved = oldName
+          ? await api.renameProjectGroup(oldName, name)
+          : await api.addProjectGroup(name);
+        activeTab = saved; // 新建 / 改名后直接切到该分组
+        toast(oldName ? "已重命名" : "已创建分组", "success");
+      } catch (e) {
+        toast(String(e), "error");
+        return false;
+      }
+      await refresh();
+      return true;
+    });
+    setTimeout(() => input.focus(), 0);
+  }
+
+  async function removeGroup(name) {
+    const n = inGroup(name).length;
+    const tip = n ? `删除分组「${name}」？其中 ${n} 个项目不会被删除，会回到「未分组」。` : `删除空分组「${name}」？`;
+    if (!(await confirmDialog(tip))) return;
+    try {
+      await api.deleteProjectGroup(name);
+      toast("已删除分组", "success");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    await refresh();
+  }
+
+  // ---------- 批量操作 ----------
+
+  /** 汇总一批项目的结果，只在一条提示里说清：几个成功、哪些失败、为什么 */
+  async function startMany(items) {
+    if (items.length === 0) return;
+    items.forEach((p) => starting.add(p.id));
+    render();
+    renderGroupTools();
+    const results = await Promise.allSettled(items.map((p) => api.startProject(p.id)));
+    items.forEach((p) => starting.delete(p.id));
+
+    const sum = summarizeStart(items, results);
+    toast(sum.text, sum.kind);
+    await refresh();
+  }
+
+  // 批量拉取：最多 3 个并发，结果汇总成一条提示（哪些有更新、哪些已是最新、哪些失败及原因）
+  async function pullMany(items) {
+    items = items.filter((p) => !pulling.has(p.id));
+    if (items.length === 0) return;
+    toast(`正在拉取 ${items.length} 个项目的代码…`, "info");
+    items.forEach((p) => pulling.add(p.id));
+    render();
+    renderGroupTools();
+    const results = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const i = next++;
+        try {
+          results[i] = { ok: true, out: await api.gitPull(items[i].id) };
+        } catch (e) {
+          results[i] = { ok: false, err: String(e) };
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    items.forEach((p) => pulling.delete(p.id));
+    const sum = summarizePull(items, results, (p) => statuses[p.id]?.running);
+    toast(sum.text, sum.kind);
+    await refresh();
+  }
+
+  async function stopMany(items) {
+    if (items.length === 0) return;
+    if (!(await confirmDialog(`停止${tabLabel()}里 ${items.length} 个运行中的项目？`))) return;
+    const results = await Promise.allSettled(items.map((p) => api.stopProject(p.id)));
+    const failed = results.filter((r) => r.status === "rejected").length;
+    toast(failed ? `已停止 ${items.length - failed} 个，${failed} 个失败` : `已停止 ${items.length} 个项目`, failed ? "error" : "success");
+    await refresh();
+  }
+
+  // ---------- 拖拽排序 ----------
 
   // 用 Pointer 事件手写拖拽：macOS WKWebView 对 HTML5 drag-and-drop 支持不完整，
   // 拖拽途中移动源节点会被忽略，导致「能拖但插不进去」。
-  function startDrag(card, e) {
-    if (e.button !== 0 || drag) return;
+  function startDrag(row, e) {
+    if (e.button !== 0 || drag || row.parentNode !== list) return;
     e.preventDefault();
 
-    const rect = card.getBoundingClientRect();
-    const placeholder = el("div", { class: "card-placeholder" });
+    const rect = row.getBoundingClientRect();
+    const placeholder = el("div", { class: "row-placeholder" });
     placeholder.style.height = `${rect.height}px`;
 
-    drag = { card, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    drag = { row, placeholder, dx: e.clientX - rect.left, dy: e.clientY - rect.top, dropTab: null };
+    window.getSelection()?.removeAllRanges(); // 进入拖拽前浏览器可能已选中了文字，清掉
 
-    // 占位块留在原位撑住网格，卡片移到 body 上用 fixed 跟随指针
-    list.insertBefore(placeholder, card);
-    card.style.width = `${rect.width}px`;
-    card.style.height = `${rect.height}px`;
-    card.style.left = `${rect.left}px`;
-    card.style.top = `${rect.top}px`;
-    card.classList.add("dragging");
-    document.body.append(card);
+    // 占位块留在原位撑住列表，行移到 body 上用 fixed 跟随指针
+    list.insertBefore(placeholder, row);
+    row.style.width = `${rect.width}px`;
+    row.style.height = `${rect.height}px`;
+    row.style.left = `${rect.left}px`;
+    row.style.top = `${rect.top}px`;
+    row.classList.add("dragging");
+    document.body.append(row);
     document.body.classList.add("dragging-active");
 
     document.addEventListener("pointermove", onMove);
@@ -49,13 +248,33 @@ export function mount(root) {
     document.addEventListener("pointercancel", endDrag);
   }
 
+  // 行空白处按下后拖动超过阈值才进入拖拽，避免点击、选中文本被误判；
+  // 按钮、输入框与命令列保持原有交互，不触发拖拽
+  function armDrag(row, down) {
+    if (down.button !== 0 || drag || down.target.closest("button, input, textarea, select, a, .cmd-cell")) return;
+    const disarm = () => {
+      document.removeEventListener("pointermove", probe);
+      document.removeEventListener("pointerup", disarm);
+      document.removeEventListener("pointercancel", disarm);
+    };
+    const probe = (e) => {
+      if (Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < 5) return;
+      disarm();
+      startDrag(row, down);
+    };
+    document.addEventListener("pointermove", probe);
+    document.addEventListener("pointerup", disarm);
+    document.addEventListener("pointercancel", disarm);
+  }
+
   function onMove(e) {
     if (!drag) return;
-    const { card, placeholder } = drag;
-    card.style.left = `${e.clientX - drag.dx}px`;
-    card.style.top = `${e.clientY - drag.dy}px`;
+    const { row, placeholder } = drag;
+    row.style.left = `${e.clientX - drag.dx}px`;
+    row.style.top = `${e.clientY - drag.dy}px`;
 
-    const after = cardAfterPoint(e.clientX, e.clientY);
+    markDropTab(e.clientX, e.clientY);
+    const after = rowAfterPoint(e.clientY);
     if (after) {
       if (after !== placeholder.nextElementSibling) list.insertBefore(placeholder, after);
     } else if (list.lastElementChild !== placeholder) {
@@ -64,139 +283,626 @@ export function mount(root) {
     autoScroll(e.clientY);
   }
 
+  /** 拖到某个分组 tab 上时高亮它，松手即把项目移到该分组（「全部」和当前所在 tab 不可作为目标） */
+  function markDropTab(x, y) {
+    const t = document.elementFromPoint(x, y)?.closest(".tab[data-tab]");
+    const id = t?.dataset.tab;
+    const ok = t && id !== TAB_ALL && id !== activeTab;
+    tabsEl.querySelectorAll(".tab.drop-target").forEach((n) => n.classList.remove("drop-target"));
+    drag.dropTab = ok ? id : null;
+    if (ok) t.classList.add("drop-target");
+    drag.row.classList.toggle("over-tab", !!ok); // 被拖的行半透明，露出下面高亮的 tab
+  }
+
+  async function moveToGroup(projectId, tabId) {
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return;
+    const group = tabId === TAB_NONE ? null : tabId;
+    try {
+      await api.saveProject({ ...p, group });
+      toast(`「${p.name}」已移到${group ? `分组「${group}」` : "未分组"}`, "success");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    await refresh();
+  }
+
   async function endDrag() {
     if (!drag) return;
-    const { card, placeholder } = drag;
+    const { row, placeholder, dropTab } = drag;
+    tabsEl.querySelectorAll(".tab.drop-target").forEach((n) => n.classList.remove("drop-target"));
     drag = null;
     document.removeEventListener("pointermove", onMove);
     document.removeEventListener("pointerup", endDrag);
     document.removeEventListener("pointercancel", endDrag);
     document.body.classList.remove("dragging-active");
 
-    // 卡片落回占位块的位置
-    card.classList.remove("dragging");
-    card.removeAttribute("style");
-    list.insertBefore(card, placeholder);
+    // 行落回占位块的位置
+    row.classList.remove("dragging");
+    row.removeAttribute("style");
+    list.insertBefore(row, placeholder);
     placeholder.remove();
 
+    if (dropTab) {
+      await moveToGroup(row.dataset.id, dropTab); // 松手在 tab 上：换分组，不改顺序
+      return;
+    }
     await commitOrder();
     render(); // 补上拖拽期间被跳过的状态刷新
   }
 
-  /** 拖到视口上下边缘时滚动内容区 */
+  /** 拖到视口上下边缘时滚动内容区；上沿要避开固定在顶部的标题 + tab 栏 */
   function autoScroll(y) {
     const scroller = root.closest(".content") || root.parentElement;
     if (!scroller) return;
     const r = scroller.getBoundingClientRect();
-    if (y < r.top + 60) scroller.scrollTop -= 12;
+    const top = r.top + header.offsetHeight;
+    if (y < top + 40) scroller.scrollTop -= 12;
     else if (y > r.bottom - 60) scroller.scrollTop += 12;
   }
 
-  /** 找出应排在指针位置之后的那张卡片（网格布局：先比较行，再比较列） */
-  function cardAfterPoint(x, y) {
-    for (const c of list.querySelectorAll(".card")) {
-      const r = c.getBoundingClientRect();
-      if (y < r.top) return c; // 指针在这张卡片所在行之上
-      if (y <= r.bottom && x < r.left + r.width / 2) return c; // 同一行且在左半边
+  /** 找出应排在指针位置之后的那一行：指针在某行上半部分之上即插到它前面 */
+  function rowAfterPoint(y) {
+    for (const r of list.querySelectorAll(".prow")) {
+      const b = r.getBoundingClientRect();
+      if (y < b.top + b.height / 2) return r;
     }
     return null;
   }
 
-  // 把当前 DOM 顺序同步回内存并持久化
+  // 把当前 DOM 顺序同步回内存并持久化。
+  // 列表可能只是某个 tab 的子集：让这些项目依次回填它们原来占的位置，其余项目纹丝不动。
   async function commitOrder() {
-    const ids = [...list.querySelectorAll(".card")].map((c) => c.dataset.id);
+    const ids = [...list.querySelectorAll(".prow")].map((r) => r.dataset.id);
     const byId = new Map(projects.map((p) => [p.id, p]));
-    const next = ids.map((id) => byId.get(id)).filter(Boolean);
-    if (next.length !== projects.length) return; // 顺序异常时放弃，等下次刷新纠正
+    const visible = new Set(ids);
+    const queue = ids.map((id) => byId.get(id));
+    if (queue.some((p) => !p)) return; // 顺序异常时放弃，等下次刷新纠正
+    const next = projects.map((p) => (visible.has(p.id) ? queue.shift() : p));
     if (next.every((p, i) => p.id === projects[i].id)) return; // 顺序没变
     projects = next;
     try {
-      await api.reorderProjects(ids);
+      await api.reorderProjects(next.map((p) => p.id));
     } catch (e) {
       toast(String(e), "error");
       await refresh();
     }
   }
 
+  // ---------- 数据与渲染 ----------
+
   async function refresh() {
-    projects = await api.listProjects();
+    [projects, groups] = await Promise.all([api.listProjects(), api.listProjectGroups()]);
+    await refreshBranches();
     try {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
     } catch (e) {
       statuses = {};
     }
+    renderTabs();
     render();
+  }
+
+  // 取走后端记录的「进程自己退出」通知并弹出（多个项目同时退出时合并成一条）
+  async function showExitEvents() {
+    let events = [];
+    try {
+      events = await api.takeExitEvents();
+    } catch (_) {}
+    if (events.length === 0) return;
+    toast(events.map((e) => `${e.name}（${e.ts}）：${e.message}`).join("\n\n"), "error");
+  }
+
+  async function refreshBranches() {
+    try {
+      branches = await api.projectBranches();
+    } catch (_) {
+      branches = {};
+    }
+    try {
+      gitStatus = await api.projectGitStatus();
+    } catch (_) {
+      gitStatus = {};
+    }
   }
 
   function render() {
     if (drag) return; // 拖拽过程中不重建 DOM，避免打断
     list.innerHTML = "";
-    if (projects.length === 0) {
-      list.append(el("div", { class: "empty" }, "还没有项目。点击右上角「新增项目」注册你的第一个项目。"));
+    const rows = visibleProjects();
+    thead.style.display = rows.length ? "" : "none";
+    if (rows.length === 0) {
+      list.append(el("div", { class: "empty" }, projects.length === 0
+        ? "还没有项目。点击右上角「新增项目」注册你的第一个项目。"
+        : "这个分组下还没有项目。点右上角「新增项目」，或编辑已有项目并把它移到这里。"));
       return;
     }
-    for (const p of projects) {
-      list.append(projectCard(p, statuses[p.id]));
+    for (const p of rows) {
+      list.append(projectRow(p, statuses[p.id]));
     }
   }
 
-  function projectCard(p, st) {
+  function projectRow(p, st) {
     const running = st?.running;
     const dot = el("span", { class: `dot ${running ? "on" : "off"}` });
     const kindBadge = el("span", { class: `badge badge-${p.kind}` }, kindLabel(p.kind));
 
-    const meta = [];
-    if (p.port != null) {
-      const up = st?.port_up;
-      meta.push(el("span", { class: "meta" }, `:${p.port} ${up ? "🟢" : "⚪"}`));
-    }
-    if (running) {
-      meta.push(el("span", { class: "meta" }, `PID ${st.pid}`));
-      meta.push(el("span", { class: "meta" }, `CPU ${(st.cpu ?? 0).toFixed(0)}%`));
-      meta.push(el("span", { class: "meta" }, `${st.memory_mb ?? 0}MB`));
-      meta.push(el("span", { class: "meta" }, fmtUptime(st.uptime_secs)));
-    }
+    // 「全部」tab 里额外标出所属分组，方便辨认
+    const groupBadge = activeTab === TAB_ALL && p.group ? el("span", { class: "badge badge-group", title: "所属项目组" }, `# ${p.group}`) : null;
 
-    const runBtns = running
-      ? [
-          el("button", { class: "danger-btn", onclick: () => act(api.stopProject(p.id), "已停止") }, "■ 停止"),
-          el("button", { class: "ghost-btn", onclick: () => act(api.restartProject(p.id), "已重启") }, "↻ 重启"),
-        ]
-      : [el("button", { class: "run-btn", onclick: () => act(api.startProject(p.id), "已启动") }, "▶ 启动")];
+    // 第三行标签：当前分支 + Node / JDK 版本，都可点击切换
+    const chips = [branchChip(p), jobChip(p, st), depChip(p), ...runtimeChips(p)].filter(Boolean);
 
-    const quick = el("div", { class: "quick-actions" }, [
-      iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
-      p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
-      iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
-      iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
-      running && iconBtn("logsView", "查看日志", () => openLogModal(p)),
-      el("span", { class: "quick-spacer" }),
-      iconBtn("edit", "编辑", () => openEditor(p)),
-      iconBtn("trash", "删除", () => removeProject(p), "danger"),
+    const nameCell = el("div", { class: "name-cell" }, [
+      el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
+      el("div", { class: "sub-line" }, [groupBadge, el("span", { class: "row-path", title: p.path }, p.path)]),
+      chips.length ? el("div", { class: "chip-line" }, chips) : null,
     ]);
 
-    const cmd = el("div", { class: "card-cmd" }, [
+    const cmdCell = el("div", { class: "cmd-cell", title: p.start_command }, [
       el("span", { class: "cmd-prompt" }, "$"),
       el("code", {}, p.start_command),
     ]);
 
-    // 拖拽手柄：按住它才让卡片可拖，避免影响卡片里的文本选择与按钮
+    const portCell = el("div", { class: "port-cell" },
+      p.port != null ? `:${p.port} ${st?.port_up ? "🟢" : "⚪"}` : "—");
+
+    const metaCell = el("div", { class: "meta-cell" }, running
+      ? [
+          el("span", { title: `PID ${st.pid}` }, `PID ${st.pid} · ${fmtUptime(st.uptime_secs)}`),
+          el("span", {}, `CPU ${(st.cpu ?? 0).toFixed(0)}% · ${st.memory_mb ?? 0}MB`),
+        ]
+      : el("span", { class: "dim" }, "未运行"));
+
+    const runBtns = starting.has(p.id)
+      ? [el("button", { class: "run-btn sm", disabled: "disabled" }, "⏳ 启动中…")]
+      : running
+      ? [
+          el("button", { class: "danger-btn sm", onclick: () => stopProject(p) }, "■ 停止"),
+          el("button", { class: "ghost-btn sm", onclick: () => launch(p, api.restartProject) }, "↻ 重启"),
+        ]
+      : [el("button", { class: "run-btn sm", onclick: () => launch(p, api.startProject) }, "▶ 启动")];
+
+    // 操作列：生命周期按钮 + 快捷入口 + 编辑 / 删除
+    const actions = el("div", { class: "actions-cell" }, [
+      el("div", { class: "run-group" }, [
+        ...runBtns,
+        el("button", { class: "ghost-btn sm", title: "运行脚本：安装依赖、构建、测试等一次性任务", onclick: () => openScriptDialog(p) }, "⚙ 脚本"),
+      ]),
+      el("div", { class: "quick-group" }, [
+        iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
+        p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
+        iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
+        iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
+        iconBtn("pull", pulling.has(p.id) ? "正在拉取代码…" : "拉取最新代码（git pull）", () => pull(p), pulling.has(p.id) ? "busy" : ""),
+        iconBtn("logsView", "查看日志", () => openLogModal(p)), // 进程退出后日志仍保留，便于排查启动失败
+        iconBtn("edit", "编辑", () => openEditor(p)),
+        iconBtn("trash", "删除", () => removeProject(p), "danger"),
+      ]),
+    ]);
+
+    // 拖拽手柄：按下即拖；行上其它空白处也可拖，见 armDrag
     const handle = el("span", { class: "drag-handle", title: "拖动调整排序" });
     handle.append(icon("grip", 16));
 
-    const card = el("div", { class: "card", "data-id": p.id }, [
-      el("div", { class: "card-top" }, [handle, dot, el("span", { class: "card-title" }, p.name), kindBadge]),
-      el("div", { class: "card-path", title: p.path }, p.path),
-      cmd,
-      el("div", { class: "card-meta" }, meta),
-      el("div", { class: "card-actions" }, [...runBtns]),
-      quick,
+    const row = el("div", { class: "prow", "data-id": p.id }, [handle, nameCell, cmdCell, portCell, metaCell, actions]);
+
+    // 在行的非交互区域按下时，阻止浏览器开始原生文本选择 / 文字拖拽（否则一拖动就会选中一大片文字）
+    row.addEventListener("mousedown", (e) => {
+      if (e.button === 0 && !e.target.closest("button, input, textarea, select, a, .cmd-cell")) e.preventDefault();
+    });
+    handle.addEventListener("pointerdown", (e) => startDrag(row, e));
+    row.addEventListener("pointerdown", (e) => {
+      if (!handle.contains(e.target)) armDrag(row, e);
+    });
+
+    return row;
+  }
+
+  // 一键拉取代码：git pull --ff-only，结果（已是最新 / 更新了几个提交 / 失败原因）用提示告知
+  async function pull(p) {
+    if (pulling.has(p.id)) return;
+    pulling.add(p.id);
+    render();
+    toast(`${p.name}：正在拉取代码…`, "info");
+    try {
+      const out = await api.gitPull(p.id);
+      toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+    } finally {
+      pulling.delete(p.id);
+      render();
+    }
+  }
+
+  // 启动依赖标签：「↳ 依赖 数据库、后端」。依赖项已被删除的不显示
+  function depChip(p) {
+    const names = (p.depends_on || []).map((id) => projects.find((x) => x.id === id)?.name).filter(Boolean);
+    if (names.length === 0) return null;
+    return el("span", { class: "dep-chip", title: `启动「${p.name}」前，会先启动并等待就绪：${names.join("、")}` }, `↳ 依赖 ${names.join("、")}`);
+  }
+
+  /** 一个项目的全部依赖 id（含间接依赖，已防循环） */
+  function allDeps(p, seen = new Set()) {
+    for (const id of p.depends_on || []) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const dep = projects.find((x) => x.id === id);
+      if (dep) allDeps(dep, seen);
+    }
+    return seen;
+  }
+
+  // 停止项目：若有正在运行的项目依赖它，先确认
+  async function stopProject(p) {
+    const dependents = projects.filter((x) => (x.depends_on || []).includes(p.id) && statuses[x.id]?.running);
+    if (dependents.length > 0) {
+      const ok = await confirmDialog(
+        `「${dependents.map((d) => d.name).join("、")}」依赖「${p.name}」，且正在运行。\n停止它之后，这些项目可能出错。\n\n仍要停止「${p.name}」吗？`,
+        { okText: "仍然停止", cancelText: "取消" },
+      );
+      if (!ok) return;
+    }
+    await act(api.stopProject(p.id), "已停止");
+  }
+
+  // 正在运行的脚本任务标签（带计时），点击可取消
+  function jobChip(p, st) {
+    if (!st?.job) return null;
+    const chip = el("button", {
+      class: "rt-chip job-chip",
+      title: `脚本「${st.job}」运行中（点击取消）`,
+      onclick: () => cancelJob(p, st.job),
+    });
+    chip.append(icon("cog", 11), el("span", {}, `${st.job} · ${fmtUptime(st.job_secs)}`));
+    return chip;
+  }
+
+  async function cancelJob(p, label) {
+    if (!(await confirmDialog(`取消「${p.name}」正在运行的脚本「${label}」？`, { okText: "取消脚本", cancelText: "继续运行" }))) return;
+    try {
+      await api.cancelScript(p.id);
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    await refresh();
+  }
+
+  // 运行一个脚本任务并等结果：完成 / 失败（含原因和最后输出）/ 已取消
+  async function runScript(p, command, label) {
+    toast(`${p.name}：开始运行脚本「${label}」…（输出见日志）`, "info");
+    const pending = api.runScript(p.id, command, label);
+    setTimeout(refresh, 500); // 让「脚本运行中」标签尽快出现
+    try {
+      const out = await pending;
+      toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+    } finally {
+      await refresh();
+    }
+  }
+
+  // 脚本选择窗口：列出识别到的脚本，点一下就运行；也可以输入自定义命令
+  async function openScriptDialog(p) {
+    let scripts = [];
+    try {
+      scripts = await api.listScripts(p.id);
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+      return;
+    }
+    const running = statuses[p.id]?.job;
+    let closeModal = () => {};
+    const go = (command, label) => {
+      closeModal();
+      runScript(p, command, label);
+    };
+
+    const list = el("div", { class: "sc-list" });
+    if (scripts.length === 0) {
+      list.append(el("div", { class: "empty" }, "没有识别到脚本。可以在下面输入自定义命令。"));
+    }
+    for (const s of scripts) {
+      list.append(el("div", { class: `sc-item${running ? " disabled" : ""}`, onclick: () => go(s.command, s.label) }, [
+        el("div", { class: "sc-main" }, [el("span", { class: "sc-name" }, s.label), el("span", { class: "sc-src" }, s.source)]),
+        el("div", { class: "sc-cmd", title: s.command }, `$ ${s.command}`),
+        s.hint ? el("div", { class: "sc-hint" }, s.hint) : null,
+      ]));
+    }
+
+    const input = el("input", { type: "text", placeholder: "自定义命令，如 npm run build -- --mode test", disabled: running ? "disabled" : false });
+    const runBtn = el("button", { class: "primary-btn", disabled: running ? "disabled" : false }, "运行");
+    const runCustom = () => {
+      const c = input.value.trim();
+      if (!c) return toast("请输入命令", "error");
+      go(c, c.length > 24 ? `${c.slice(0, 24)}…` : c);
+    };
+    runBtn.onclick = runCustom;
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") runCustom(); });
+
+    const body = el("div", { class: "form" }, [
+      running
+        ? el("div", { class: "sc-running" }, [
+            el("span", {}, `脚本「${running}」正在运行，结束后才能运行新的`),
+            el("button", { class: "danger-btn sm", onclick: () => { closeModal(); cancelJob(p, running); } }, "取消它"),
+          ])
+        : el("div", { class: "note" }, `在「${p.name}」的工作目录里运行，使用该项目选定的 Node / JDK 版本和环境变量，输出写入项目日志。`),
+      list,
+      el("div", { class: "sc-custom" }, [input, runBtn]),
     ]);
+    closeModal = showModal(`运行脚本 · ${p.name}`, body, null, null);
+  }
 
-    handle.addEventListener("pointerdown", (e) => startDrag(card, e));
+  // 当前分支标签（非 git 项目不显示）。点击打开分支切换
+  function branchChip(p) {
+    const b = branches[p.id];
+    if (!b) return null;
+    const gs = gitStatus[p.id];
+    // 徽标：↑ 本地领先（待推送）、↓ 落后远程（待拉取，以最近一次 fetch 为准）、● 有未提交修改
+    const notes = [];
+    if (gs?.ahead) notes.push(`领先远程 ${gs.ahead} 个提交（还没推送）`);
+    if (gs?.behind) notes.push(`落后远程 ${gs.behind} 个提交（可以拉取）`);
+    if (gs?.dirty) notes.push(`${gs.dirty} 个文件有未提交的修改`);
+    if (gs && !gs.has_upstream) notes.push("当前分支没有设置上游分支");
+    const chip = el("button", {
+      class: `rt-chip br-chip${b.detached ? " detached" : ""}`,
+      title: `${b.detached ? `游离 HEAD（${b.name}），点击切换到某个分支` : `当前分支 ${b.name}（点击切换分支）`}${notes.length ? `\n${notes.join("\n")}` : ""}`,
+      onclick: () => openBranchDialog(p),
+    });
+    chip.append(icon("branch", 11), el("span", { class: "br-name-text" }, b.detached ? `游离 ${b.name}` : b.name));
+    if (gs?.ahead) chip.append(el("span", { class: "gs ahead" }, `↑${gs.ahead}`));
+    if (gs?.behind) chip.append(el("span", { class: "gs behind" }, `↓${gs.behind}`));
+    if (gs?.dirty) chip.append(el("span", { class: "gs dirty" }, `●${gs.dirty}`));
+    return chip;
+  }
 
-    return card;
+  // 切换分支：列出本地 + 仅远程存在的分支，可搜索、可先获取远程最新分支
+  async function openBranchDialog(p) {
+    let data;
+    try {
+      data = await api.gitBranches(p.id);
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+      return;
+    }
+    let selected = null; // { name, kind }
+    const search = el("input", { type: "text", placeholder: "搜索分支…" });
+    const list = el("div", { class: "br-list" });
+    const head = el("div", { class: "br-head" });
+    const fetchBtn = el("button", { class: "ghost-btn sm", type: "button", title: "git fetch --prune：取回远程最新的分支信息" }, "↻ 获取远程分支");
+
+    const renderHead = () => {
+      head.innerHTML = "";
+      const cur = data.current;
+      head.append(
+        el("span", {}, cur ? (cur.detached ? `当前：游离 HEAD（${cur.name}）` : `当前：${cur.name}`) : "当前：未知"),
+        data.dirty > 0
+          ? el("span", { class: "br-warn" }, `有 ${data.dirty} 个文件未提交；若与目标分支冲突，切换会被拒绝（不会丢失修改）`)
+          : null,
+      );
+    };
+
+    const renderList = () => {
+      list.innerHTML = "";
+      const q = search.value.trim().toLowerCase();
+      const rows = data.branches.filter((b) => !q || b.name.toLowerCase().includes(q));
+      if (rows.length === 0) {
+        list.append(el("div", { class: "empty" }, data.branches.length ? "没有匹配的分支" : "没有分支"));
+        return;
+      }
+      for (const b of rows) {
+        const isSel = selected && selected.name === b.name && selected.kind === b.kind;
+        const item = el("div", {
+          class: `br-item${b.current ? " current" : ""}${isSel ? " selected" : ""}`,
+          onclick: () => {
+            if (b.current) return;
+            selected = { name: b.name, kind: b.kind };
+            renderList();
+          },
+        }, [
+          el("div", { class: "br-main" }, [
+            el("span", { class: "br-name" }, b.name),
+            b.current ? el("span", { class: "br-tag cur" }, "当前") : el("span", { class: `br-tag ${b.kind}` }, b.kind === "remote" ? "远程" : "本地"),
+          ]),
+          el("div", { class: "br-sub" }, `${b.hash} · ${b.date} · ${b.subject}`),
+        ]);
+        list.append(item);
+      }
+    };
+
+    fetchBtn.onclick = async () => {
+      fetchBtn.disabled = true;
+      fetchBtn.textContent = "获取中…";
+      try {
+        await api.gitFetch(p.id);
+        data = await api.gitBranches(p.id);
+        renderHead();
+        renderList();
+        toast("已获取远程最新分支", "success");
+      } catch (e) {
+        toast(String(e), "error");
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.textContent = "↻ 获取远程分支";
+      }
+    };
+    search.addEventListener("input", renderList);
+    renderHead();
+    renderList();
+
+    const body = el("div", { class: "form" }, [
+      el("div", { class: "br-top" }, [head, fetchBtn]),
+      search,
+      list,
+    ]);
+    showModal(`切换分支 · ${p.name}`, body, async () => {
+      if (!selected) {
+        toast("请先点选要切换到的分支", "error");
+        return false;
+      }
+      try {
+        const out = await api.gitCheckout(p.id, selected.name, selected.kind);
+        toast(`${p.name}：${out.message}`, out.message.includes("重启") ? "warning" : "success");
+      } catch (e) {
+        toast(`${p.name}：${String(e)}`, "error");
+        return false;
+      }
+      await refresh();
+      return true;
+    }, "切换");
+    setTimeout(() => search.focus(), 0);
+  }
+
+  // 运行时版本标签：前端项目显示 Node、后端项目显示 JDK；「其它」类型只在设置过时显示。点击可切换。
+  function runtimeChips(p) {
+    const kinds = [];
+    if (p.kind === "frontend" || p.node) kinds.push("node");
+    if (p.kind === "backend" || p.java) kinds.push("java");
+    return kinds.map((k) => {
+      const cur = p[k];
+      const label = k === "node" ? "Node" : "JDK";
+      return el("button", {
+        class: `rt-chip${cur ? " set" : ""}`,
+        title: cur ? `${label} ${cur.version}（点击切换）` : `使用系统默认 ${label}（点击切换版本）`,
+        onclick: () => openRuntimeDialog(p, k),
+      }, cur ? `${label} ${cur.version}` : `${label} 默认`);
+    });
+  }
+
+  /** 构造某种运行时的版本下拉；已选版本若本机检测不到（被卸载）也保留并标出 */
+  function runtimeSelect(kind, list, current) {
+    const label = kind === "node" ? "Node" : "JDK";
+    const options = [el("option", { value: "" }, `系统默认（不指定）`)];
+    const known = new Set();
+    for (const r of list) {
+      known.add(r.path);
+      options.push(el("option", {
+        value: r.path,
+        selected: current?.path === r.path ? "selected" : false,
+      }, `${label} ${r.version} · ${r.source}`));
+    }
+    if (current && !known.has(current.path)) {
+      options.push(el("option", { value: current.path, selected: "selected" }, `⚠ ${label} ${current.version}（本机未检测到，可能已卸载）`));
+    }
+    const sel = el("select", {}, options);
+    const emptyHint = list.length === 0 ? `没有检测到本机安装的 ${label}（支持 ${kind === "node" ? "nvm / fnm / Volta / asdf / Homebrew" : "系统 JVM / SDKMAN / asdf / Homebrew"}）` : null;
+    return {
+      sel, emptyHint,
+      /** 当前选择对应的 {version, path}；选「系统默认」为 null */
+      value() {
+        if (!sel.value) return null;
+        if (current?.path === sel.value) return current;
+        const r = list.find((x) => x.path === sel.value);
+        return r ? { version: r.version, path: r.path } : null;
+      },
+    };
+  }
+
+  async function loadRuntimes() {
+    try {
+      return await api.listRuntimes();
+    } catch (e) {
+      toast(`检测 Node / JDK 版本失败：${String(e)}`, "error");
+      return { node: [], java: [] };
+    }
+  }
+
+  // 在列表里直接切换某个项目的 Node / JDK 版本
+  async function openRuntimeDialog(p, kind) {
+    const rts = await loadRuntimes();
+    const label = kind === "node" ? "Node" : "JDK";
+    const rs = runtimeSelect(kind, rts[kind], p[kind]);
+    const body = el("div", { class: "form" }, [
+      el("label", { class: "form-row" }, [el("span", {}, `${label} 版本`), rs.sel]),
+      el("div", { class: "note" }, rs.emptyHint || `选定后，启动「${p.name}」时会优先使用该版本${kind === "java" ? "（同时设置 JAVA_HOME）" : ""}。`),
+    ]);
+    showModal(`切换 ${label} 版本 · ${p.name}`, body, async () => {
+      const next = rs.value();
+      try {
+        await api.saveProject({ ...p, [kind]: next });
+      } catch (e) {
+        toast(String(e), "error");
+        return false;
+      }
+      const running = statuses[p.id]?.running;
+      const what = next ? `${label} ${next.version}` : `系统默认 ${label}`;
+      toast(running ? `已切换为 ${what}；项目正在运行，需点「重启」才会生效` : `已切换为 ${what}`, running ? "warning" : "success");
+      await refresh();
+      return true;
+    });
+  }
+
+  /**
+   * 启动前的端口预检：本项目以及它还没运行的依赖，登记的端口若已被占用，
+   * 说明是谁占的，让用户选择「结束占用并启动 / 仍然启动 / 取消」。返回 true 表示继续启动。
+   * 检测本身失败（如 lsof 不可用）时忽略，照常启动。
+   */
+  async function portPreflight(p) {
+    const chain = [...allDeps(p)]
+      .map((id) => projects.find((x) => x.id === id))
+      .filter((x) => x && !statuses[x.id]?.running);
+    chain.push(p);
+    for (const q of chain) {
+      if (q.port == null) continue;
+      let chk;
+      try {
+        chk = await api.checkProjectPort(q.id);
+      } catch (_) {
+        continue;
+      }
+      if (!chk.holders?.length) continue;
+      const who = chk.holders.map((h) => (h.project ? `项目「${h.project}」` : `${h.process}（PID ${h.pid}）`)).join("、");
+      const choice = await choiceDialog(
+        `端口 ${chk.port} 已被占用：${who}\n\n「${q.name}」要用这个端口，直接启动很可能会冲突。`,
+        [
+          { label: "结束占用并启动", value: "kill", kind: "danger" },
+          { label: "仍然启动", value: "go", kind: "ghost" },
+          { label: "取消", value: null, kind: "ghost" },
+        ],
+      );
+      if (choice === null) return false;
+      if (choice === "kill") {
+        for (const h of chk.holders) {
+          try {
+            // 占用者是 DevBox 里运行中的项目：正常停止它；否则结束该进程（连同子进程，并确认端口已释放）
+            if (h.project_id) await api.stopProject(h.project_id);
+            else await api.killProcess(h.pid, chk.port);
+          } catch (e) {
+            toast(`无法释放端口 ${chk.port}：${String(e)}`, "error");
+            return false;
+          }
+        }
+        toast(`已释放端口 ${chk.port}`, "success");
+        await refresh();
+      }
+    }
+    return true;
+  }
+
+  // 启动 / 重启并反馈结果：成功、成功但有提醒、失败（含原因）。
+  // 后端会等到端口就绪或进程提前退出才返回，期间行内显示「启动中…」。
+  async function launch(p, fn) {
+    // 启动（不是重启）前先检查端口：重启时端口就是它自己占着的
+    if (fn === api.startProject && !(await portPreflight(p))) return;
+    // 还没运行的依赖（含依赖的依赖）会被一起启动，它们也显示「启动中…」
+    const pre = [...allDeps(p)].filter((id) => !statuses[id]?.running);
+    starting.add(p.id);
+    pre.forEach((id) => starting.add(id));
+    render();
+    renderGroupTools();
+    try {
+      const out = await fn(p.id);
+      toast(`${p.name}：${out.message}`, out.level === "warning" ? "warning" : "success");
+    } catch (e) {
+      toast(`${p.name}：${String(e)}`, "error");
+    } finally {
+      starting.delete(p.id);
+      pre.forEach((id) => starting.delete(id));
+      await refresh();
+    }
   }
 
   async function act(promise, okMsg) {
@@ -212,44 +918,23 @@ export function mount(root) {
 
   // 单独查看某个项目的实时日志
   function openLogModal(p) {
-    const body = el("pre", { class: "term-log" }, "加载日志中…");
-    let alive = true;
-    let interval = null;
-
-    async function pull() {
-      try {
-        const lines = await api.getLogs(p.id);
-        if (!alive) return;
-        if (!lines || lines.length === 0) {
-          body.textContent = "暂无日志输出";
-          return;
-        }
-        const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
-        body.innerHTML = "";
-        for (const l of lines) {
-          const line = el("div", { class: `log-line ${l.stream}` }, [
-            el("span", { class: "log-ts" }, l.ts),
-            el("span", { class: "log-text" }, l.text),
-          ]);
-          body.append(line);
-        }
-        if (atBottom) body.scrollTop = body.scrollHeight;
-      } catch (_) {}
-    }
-
-    showTermModal(`日志 · ${p.name}`, body, () => {
-      alive = false;
-      if (interval) clearInterval(interval);
+    const view = createLogView({
+      fetchChunk: (after, epoch) => api.getLogs(p.id, after, epoch),
+      onClear: () => api.clearLogs(p.id),
+      onRevealFile: async () => guard(api.revealInFinder(await api.logFilePath(p.id))),
     });
-    pull();
-    interval = setInterval(pull, 1000);
+    showTermModal(`日志 · ${p.name}`, view.root, () => view.stop());
+    view.start();
   }
 
-  function openEditor(p) {
+  async function openEditor(p) {
     const isNew = !p;
+    const rts = await loadRuntimes();
     const data = p
       ? { ...p, env: p.env || {} }
-      : { id: "", name: "", path: "", kind: "frontend", start_command: "", stop_command: "", port: "", url: "", editor: "code", auto_restart: false, env: {} };
+      : { id: "", name: "", path: "", kind: "frontend", start_command: "", stop_command: "", port: "", url: "", editor: "code", auto_restart: false, env: {},
+        // 在某个分组 tab 里新增时，默认放进该分组
+        group: groups.includes(activeTab) ? activeTab : null };
 
     const f = (name, label, placeholder = "", type = "text") =>
       el("label", { class: "form-row" }, [
@@ -260,6 +945,45 @@ export function mount(root) {
     const kindSel = el("select", { name: "kind" }, ["frontend", "backend", "other"].map((k) =>
       el("option", { value: k, selected: data.kind === k ? "selected" : false }, kindLabel(k))
     ));
+
+    const groupSel = el("select", { name: "group" }, [
+      el("option", { value: "" }, "未分组"),
+      ...groups.map((g) => el("option", { value: g, selected: data.group === g ? "selected" : false }, g)),
+    ]);
+
+    // 前端项目选 Node，后端项目选 JDK，「其它」两者都可选
+    const nodeRs = runtimeSelect("node", rts.node, data.node);
+    const javaRs = runtimeSelect("java", rts.java, data.java);
+    const rtRow = (label, rs) =>
+      el("label", { class: "form-row" }, [
+        el("span", {}, label),
+        rs.sel,
+        rs.emptyHint && el("small", { class: "dim" }, rs.emptyHint),
+      ]);
+    const nodeRow = rtRow("Node 版本", nodeRs);
+    const javaRow = rtRow("JDK 版本", javaRs);
+    const syncRuntimeRows = () => {
+      nodeRow.style.display = kindSel.value === "backend" ? "none" : "";
+      javaRow.style.display = kindSel.value === "frontend" ? "none" : "";
+    };
+    kindSel.addEventListener("change", syncRuntimeRows);
+    syncRuntimeRows();
+
+    // 启动前依赖：勾选的项目会先启动并等它就绪，然后才启动本项目
+    const depBoxes = projects
+      .filter((o) => o.id !== data.id)
+      .map((o) => {
+        const cb = el("input", { type: "checkbox", value: o.id });
+        if ((data.depends_on || []).includes(o.id)) cb.checked = true;
+        return el("label", { class: "dep-item" }, [cb, el("span", {}, o.name)]);
+      });
+    const depRow = el("div", { class: "form-row" }, [
+      el("span", {}, "启动前依赖"),
+      depBoxes.length
+        ? el("div", { class: "dep-list" }, depBoxes)
+        : el("small", { class: "dim" }, "还没有其他项目可以依赖"),
+      depBoxes.length ? el("small", { class: "dim" }, "勾选的项目会先启动并等它就绪（有端口就等端口监听），再启动本项目。") : null,
+    ]);
 
     const autoRestart = el("input", { type: "checkbox", name: "auto_restart" });
     if (data.auto_restart) autoRestart.checked = true;
@@ -299,21 +1023,79 @@ export function mount(root) {
 
     // 启动命令：终端命令行风格，可多行换行
     const cmdInput = el("textarea", { name: "start_command", class: "cmd-field", rows: "2", placeholder: "npm run dev" }, data.start_command ?? "");
-    const cmdRow = el("label", { class: "form-row" }, [
-      el("span", {}, "启动命令"),
+    const cmdBtn = el("button", { class: "detect-btn", type: "button", title: "读取工作目录里的配置文件，列出可用的启动命令" });
+    cmdBtn.append(icon("magic", 15), el("span", {}, "获取启动命令"));
+    const candBox = el("div", { class: "cand-box" });
+    candBox.style.display = "none";
+    const cmdRow = el("div", { class: "form-row" }, [
+      el("div", { class: "cmd-head" }, [el("span", {}, "启动命令"), cmdBtn]),
       el("div", { class: "cmd-input" }, [el("span", { class: "cmd-prompt" }, "$"), cmdInput]),
+      candBox,
     ]);
+
+    // 「获取启动命令」：列出识别到的候选，点一下填进输入框；输入框是空的就先填推荐项
+    let mark = () => {};
+    cmdInput.addEventListener("input", () => mark()); // 只绑定一次；mark 随每次获取的结果更新
+    const showCandidates = (list) => {
+      candBox.replaceChildren();
+      if (!list.length) {
+        candBox.style.display = "none";
+        toast("没有从目录里识别出启动命令，请手动填写", "warning");
+        return;
+      }
+      const filled = !cmdInput.value.trim();
+      if (filled) cmdInput.value = list[0].command;
+      const items = list.map((c) => {
+        const item = el("div", { class: "cand-item", title: "点击使用这条命令" }, [
+          el("code", { class: "cand-cmd" }, c.command),
+          el("div", { class: "cand-meta" }, [el("b", {}, c.label), el("span", {}, c.source), c.note ? el("span", { class: "cand-note" }, c.note) : null]),
+        ]);
+        item.onclick = () => {
+          cmdInput.value = c.command;
+          mark();
+        };
+        return { c, item };
+      });
+      mark = () => items.forEach(({ c, item }) => item.classList.toggle("active", c.command === cmdInput.value.trim()));
+      mark();
+      candBox.append(
+        el("div", { class: "cand-head" }, filled
+          ? `识别到 ${list.length} 个，已填入推荐的第一个；点击下面任意一条可更换`
+          : `识别到 ${list.length} 个；当前命令没有改动，点击下面任意一条可替换`),
+        ...items.map((x) => x.item)
+      );
+      candBox.style.display = "";
+    };
+    cmdBtn.onclick = async () => {
+      const path = pathInput.value.trim();
+      if (!path) {
+        toast("请先填写工作目录", "error");
+        return;
+      }
+      cmdBtn.disabled = true;
+      try {
+        showCandidates(await api.detectStartCommands(path));
+      } catch (e) {
+        toast(String(e), "error");
+      } finally {
+        cmdBtn.disabled = false;
+      }
+    };
 
     const form = el("div", { class: "form" }, [
       f("name", "名称", "我的前端"),
       pathRow,
       el("label", { class: "form-row" }, [el("span", {}, "类型"), kindSel]),
+      el("label", { class: "form-row" }, [el("span", {}, "所属项目组"), groupSel]),
       cmdRow,
+      nodeRow,
+      javaRow,
       f("stop_command", "停止命令(可选)", "留空则由 DevBox 结束进程树"),
       f("port", "端口(可选)", "3000", "number"),
       f("url", "打开地址(可选)", "http://localhost:3000"),
       f("editor", "编辑器命令", "code"),
       el("label", { class: "form-row" }, [el("span", {}, "环境变量"), envArea]),
+      depRow,
       el("label", { class: "form-row checkbox" }, [autoRestart, el("span", {}, "崩溃后自动重启")]),
     ]);
 
@@ -339,7 +1121,27 @@ export function mount(root) {
           const urlInput = form.querySelector('[name="url"]');
           if (urlInput && !urlInput.value.trim()) urlInput.value = d.url;
         }
-        toast(d.summary || "已自动填充", "success");
+        syncRuntimeRows(); // 类型被程序改了（不会触发 change 事件），手动同步 Node / JDK 行的显隐
+
+        // 项目声明的 Node / JDK 版本：本机有就自动选中，没有就明确告诉用户缺什么
+        const lines = [];
+        let warn = false;
+        const applyRuntime = (sug, rs, row, label) => {
+          if (!sug || row.style.display === "none") return;
+          if (sug.matched) {
+            rs.sel.value = sug.matched.path;
+            lines.push(`已选 ${label} ${sug.matched.version}（${sug.source} 要求 ${sug.wanted}）`);
+          } else {
+            warn = true;
+            lines.push(`项目要求 ${label} ${sug.wanted}（${sug.source}），本机没有检测到，请先安装`);
+          }
+        };
+        applyRuntime(d.node, nodeRs, nodeRow, "Node");
+        applyRuntime(d.java, javaRs, javaRow, "JDK");
+        if (d.notes?.length) warn = true;
+
+        const text = [d.summary || "已自动填充", ...lines, ...(d.notes || [])].join("\n");
+        toast(text, warn ? "warning" : "success");
       } catch (e) {
         toast(String(e), "error");
       } finally {
@@ -359,6 +1161,11 @@ export function mount(root) {
         name: get("name"),
         path: get("path"),
         kind: kindSel.value,
+        group: groupSel.value || null,
+        depends_on: [...depRow.querySelectorAll("input:checked")].map((i) => i.value),
+        // 当前类型下看不到的那一项视为不指定，避免残留的旧选择悄悄生效
+        node: nodeRow.style.display === "none" ? null : nodeRs.value(),
+        java: javaRow.style.display === "none" ? null : javaRs.value(),
         start_command: get("start_command"),
         stop_command: get("stop_command") || null,
         port: get("port") ? Number(get("port")) : null,
@@ -371,7 +1178,11 @@ export function mount(root) {
         toast("名称、工作目录、启动命令为必填", "error");
         return false;
       }
-      await guard(api.saveProject(project), "已保存");
+      try {
+        await guard(api.saveProject(project), "已保存");
+      } catch (_) {
+        return false; // 保存失败（如依赖成环）：错误已弹出，弹窗保持打开让用户改
+      }
       await refresh();
       return true;
     });
@@ -382,7 +1193,10 @@ export function mount(root) {
     try {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
+      await refreshBranches(); // 在终端里切了分支，这里也能跟上
+      await showExitEvents(); // 启动确认之后才崩溃的项目，也要告诉用户原因
       render();
+      renderGroupTools(); // 批量按钮的可用状态随运行状态变化
       await api.healthTick();
     } catch (_) {}
   }, 2500);
@@ -398,24 +1212,26 @@ function kindLabel(k) {
 }
 
 // 简易模态框
-export function showModal(title, body, onOk) {
+function showModal(title, body, onOk, okText = "保存") {
   const overlay = el("div", { class: "modal-overlay" });
-  const okBtn = el("button", { class: "primary-btn" }, "保存");
+  const okBtn = el("button", { class: "primary-btn" }, okText);
   const cancelBtn = el("button", { class: "ghost-btn" }, "取消");
   const modal = el("div", { class: "modal" }, [
     el("div", { class: "modal-header" }, title),
     el("div", { class: "modal-body" }, body),
-    el("div", { class: "modal-footer" }, [cancelBtn, okBtn]),
+    el("div", { class: "modal-footer" }, okText === null ? [cancelBtn] : [cancelBtn, okBtn]),
   ]);
   overlay.append(modal);
   document.body.append(overlay);
   const close = () => overlay.remove();
+  if (okText === null) cancelBtn.textContent = "关闭";
   cancelBtn.onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   okBtn.onclick = async () => {
     const ok = await onOk();
     if (ok !== false) close();
   };
+  return close;
 }
 
 // 只读的终端风格日志模态框（带关闭回调用于清理定时器）
