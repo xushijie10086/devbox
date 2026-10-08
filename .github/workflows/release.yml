@@ -1,0 +1,110 @@
+name: Release
+
+# 推送 v* 标签：打包并发布 GitHub Release。
+# 修改本文件的 PR 只会打包验证，不会发布。
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: 1.97.0 # 与 ci.yml 保持一致
+
+jobs:
+  build:
+    name: 打包 (macOS 通用)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+
+      - name: 标签与版本号必须一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(node -p "require('./package.json').version")
+          if [ "$want" != "$have" ]; then
+            echo "::error::标签是 $GITHUB_REF_NAME，但 package.json 的版本是 $have；请先把所有版本号改成 $want 再打标签"
+            exit 1
+          fi
+
+      - name: 测试
+        run: npm test
+
+      - name: 打包 dmg（Apple Silicon + Intel 通用）
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg,app
+
+      - name: 整理产物
+        run: |
+          set -e
+          out=dist-release
+          mkdir -p "$out"
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          cp "$bundle"/dmg/*.dmg "$out"/
+          ditto -c -k --sequesterRsrc --keepParent "$bundle/macos/DevBox.app" "$out/DevBox_universal.app.zip"
+          (cd "$out" && shasum -a 256 * > SHA256SUMS.txt)
+          ls -la "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devbox-macos
+          path: dist-release/*
+          if-no-files-found: error
+
+  publish:
+    name: 发布 Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: devbox-macos
+          path: dist-release
+
+      - name: 从 CHANGELOG.md 取本版本的说明
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v v="$ver" '$0 ~ "^## " v {f=1; next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md 里没有 $ver 的更新说明"
+            exit 1
+          fi
+          cat >> notes.md <<'NOTE'
+
+          ---
+
+          ### 安装
+
+          下载 `.dmg`，把 DevBox 拖进「应用程序」。应用目前没有做 Apple 签名与公证，首次打开如果提示「无法验证开发者」：
+          在「应用程序」里右键 DevBox → 打开；或者在终端执行 `xattr -cr /Applications/DevBox.app`。
+
+          `SHA256SUMS.txt` 是各文件的校验值。
+          NOTE
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist-release/* \
+            --title "DevBox ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --verify-tag
