@@ -1,0 +1,4 @@
+# macOS 上运行应用二进制前先固定签名（见 scripts/sign-and-run.sh）。
+# 没有证书时脚本会原样运行，所以对其他人 / CI 没有影响。
+[target.'cfg(target_os = "macos")']
+runner = "scripts/sign-and-run.sh"
