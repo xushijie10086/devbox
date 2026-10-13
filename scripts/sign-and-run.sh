@@ -14,10 +14,10 @@ identity="${DEVBOX_SIGN_IDENTITY:-DevBox Local Signing}"
 if [ "$(uname)" = "Darwin" ] && [ "$(basename "$bin")" = "devbox" ]; then
   if security find-identity -v -p codesigning 2>/dev/null | grep -qF "\"$identity\""; then
     if ! codesign --force --sign "$identity" --identifier dev.devbox.app "$bin" 2>/dev/null; then
-      echo "[sign-and-run] 用「$identity」签名失败，按未签名运行（授权弹窗可能再次出现）" >&2
+      echo "[sign-and-run] 用「${identity}」签名失败，按未签名运行（授权弹窗可能再次出现）" >&2
     fi
   else
-    echo "[sign-and-run] 没找到代码签名证书「$identity」，按未签名运行；创建方法见 README「固定签名」" >&2
+    echo "[sign-and-run] 没找到代码签名证书「${identity}」，按未签名运行；创建方法见 README「固定签名」" >&2
   fi
 fi
 

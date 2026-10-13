@@ -28,14 +28,14 @@ has_identity() {
 }
 
 if has_identity; then
-  echo "已经有可用的代码签名证书「$NAME」，无需重复创建。"
+  echo "已经有可用的代码签名证书「${NAME}」，无需重复创建。"
   exit 0
 fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "==> 生成证书「$NAME」（有效期 10 年）"
+echo "==> 生成证书「${NAME}」（有效期 10 年）"
 cat > "$tmp/openssl.cnf" <<CNF
 [req]
 distinguished_name = dn
@@ -72,13 +72,13 @@ fi
 
 if has_identity; then
   echo
-  echo "完成。现在这条命令应该能看到「$NAME」："
+  echo "完成。现在这条命令应该能看到「${NAME}」："
   echo "    security find-identity -v -p codesigning"
   echo "之后：开发模式（npm run tauri dev）会自动用它签名；打包用 scripts/build-signed.sh。"
   echo "切换后第一次运行 DevBox 会再弹一次文件夹授权，点「允许」，以后就不会再弹了。"
 else
   echo >&2
-  echo "证书已导入，但还没变成「有效」状态。请手动在「钥匙串访问」里双击「$NAME」→ 展开「信任」→「代码签名」选「始终信任」，然后再运行：" >&2
+  echo "证书已导入，但还没变成「有效」状态。请手动在「钥匙串访问」里双击「${NAME}」→ 展开「信任」→「代码签名」选「始终信任」，然后再运行：" >&2
   echo "    security find-identity -v -p codesigning" >&2
   exit 1
 fi

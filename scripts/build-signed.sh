@@ -13,13 +13,13 @@ fi
 
 identity="${DEVBOX_SIGN_IDENTITY:-DevBox Local Signing}"
 if ! security find-identity -v -p codesigning | grep -qF "\"$identity\""; then
-  echo "没找到可用的代码签名证书「$identity」。" >&2
+  echo "没找到可用的代码签名证书「${identity}」。" >&2
   echo "请先按 README「固定签名，消除文件夹权限弹窗」创建并信任证书，然后确认下面命令能看到它：" >&2
   echo "    security find-identity -v -p codesigning" >&2
   exit 1
 fi
 
-echo "==> 用「$identity」签名并打包"
+echo "==> 用「${identity}」签名并打包"
 APPLE_SIGNING_IDENTITY="$identity" npm run tauri -- build --bundles app,dmg
 
 app=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
