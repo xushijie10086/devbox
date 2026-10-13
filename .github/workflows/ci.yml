@@ -97,3 +97,75 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run tauri -- build --debug --no-bundle
+
+  # 手动运行（Actions 页面 → Run workflow）：在真实 macOS 上验证「创建证书 → 签名 → 打包」整条流程。
+  # 平时不跑（耗时较长），改动 scripts/ 下的签名脚本或 src-tauri/Info.plist 之后用。
+  signing:
+    name: 签名流程 (macOS)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+
+      - name: 准备临时钥匙串（不碰 runner 的登录钥匙串）
+        run: |
+          kc="$RUNNER_TEMP/devbox-ci.keychain-db"
+          pw=$(uuidgen)
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -d user -s "$kc"
+          echo "KEYCHAIN_PASSWORD=$pw" >> "$GITHUB_ENV"
+
+      - name: 创建证书（跑两次，第二次应当直接说已存在）
+        env:
+          CI_TRUST_ADMIN: "1"
+        run: |
+          scripts/create-signing-cert.sh
+          scripts/create-signing-cert.sh | tee second.txt
+          grep -q "无需重复创建" second.txt
+          security find-identity -v -p codesigning
+
+      - name: 开发模式：sign-and-run.sh 用固定证书签名
+        run: |
+          d="$RUNNER_TEMP/sr"; mkdir -p "$d"; cd "$d"
+          printf '#include <stdio.h>\nint main(void){puts("devbox-sim");return 0;}\n' > t.c
+          cc t.c -o devbox
+          cp devbox adhoc
+          out=$("$GITHUB_WORKSPACE/scripts/sign-and-run.sh" ./devbox)
+          echo "运行输出：$out"; [ "$out" = "devbox-sim" ]
+          codesign -dr - ./devbox 2>&1 | tee dr.txt
+          grep -q 'identifier "dev.devbox.app"' dr.txt
+          grep -q 'certificate leaf' dr.txt
+          ! grep -q 'cdhash' dr.txt
+          echo "--- 对照：临时签名（现在的情况）"
+          codesign --force -s - adhoc
+          codesign -dr - adhoc 2>&1 | tee adhoc.txt
+          grep -q 'cdhash' adhoc.txt
+
+      - name: 打包：scripts/build-signed.sh
+        run: scripts/build-signed.sh
+
+      - name: 检查打出来的 App
+        run: |
+          app=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dr - "$app" 2>&1 | tee dr.txt
+          grep -q 'identifier "dev.devbox.app"' dr.txt
+          grep -q 'certificate leaf' dr.txt
+          ! grep -q 'cdhash' dr.txt
+          echo "--- 弹窗用途说明是否打进了应用"
+          /usr/libexec/PlistBuddy -c "Print :NSDocumentsFolderUsageDescription" "$app/Contents/Info.plist"
+          ls src-tauri/target/release/bundle/dmg/*.dmg
