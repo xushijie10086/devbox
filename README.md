@@ -76,6 +76,45 @@ npm test
 cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test --lib
 ```
 
+## 固定签名，消除文件夹权限弹窗
+
+如果项目放在「文稿」「桌面」「下载」里，macOS 会弹「DevBox 想访问“文稿”文件夹中的文件」。macOS 按 **代码签名身份** 记住你的选择；DevBox 没有固定证书时，每次重新编译、升级版本，签名都会变，之前的授权就作废，于是反复弹。
+解决办法是用同一个证书签名，身份不变，授权就一直有效。
+
+**1. 创建自签名证书（只需一次，免费）**
+
+1. 打开「钥匙串访问」→ 菜单「证书助理」→「创建证书」
+2. 名称填 `DevBox Local Signing`，身份类型选「自签名根证书」，证书类型选「**代码签名**」，创建
+3. 在「登录」钥匙串里找到它，双击 → 展开「信任」→「代码签名」选「始终信任」
+4. 终端确认能看到它：
+
+   ```bash
+   security find-identity -v -p codesigning
+   ```
+
+想用别的证书名：设置环境变量 `DEVBOX_SIGN_IDENTITY="证书名"`。
+
+**2. 开发模式（`npm run tauri dev`）**：什么都不用做。`.cargo/config.toml` 配了运行前签名（`scripts/sign-and-run.sh`），每次编译后会自动用这个证书签名再运行；没有证书时原样运行，不影响开发。
+
+**3. 打包安装（`.app` / `.dmg`）**：
+
+```bash
+scripts/build-signed.sh
+```
+
+构建完会打印签名信息，应该是 `certificate leaf = H"…"`；如果还是 `cdhash H"…"`，说明没签上。
+
+**4. 切换后的第一次**：换成固定签名后，macOS 会把它当成一个新应用，**再弹最后一次，点「允许」**。之后重新构建、升级都不会再弹。想清掉以前残留的授权记录：
+
+```bash
+tccutil reset SystemPolicyDocumentsFolder dev.devbox.app
+```
+
+注意：
+- GitHub Actions 上打出来的发布包仍是未签名的（CI 里没有你本机的证书），自己用请用 `scripts/build-signed.sh` 本地打包。
+- 自签名证书只对你自己的 Mac 有效；要给别人用，需要 Apple 开发者账号做 Developer ID 签名和公证。
+- 最省事的办法其实是把项目放到不受保护的目录（如 `~/code`），那样根本不会弹。
+
 ## 依赖版本约定
 
 Rust 的 `tauri` crate 与前端的 `@tauri-apps/api`、`@tauri-apps/cli` 必须是同一个「主.次」版本，否则 `tauri dev` 启动会报 `version mismatched Tauri packages`。两边都用 `~2.12` 锁定了次版本；要升级时一起改（`cargo update -p tauri` 同时 `npm install @tauri-apps/api@~X.Y @tauri-apps/cli@~X.Y`），`npm test` 会在漂移时直接报错并给出修复命令。

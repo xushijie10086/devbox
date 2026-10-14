@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 项目放在这些受保护的文件夹里时，macOS 会弹窗询问；下面的文字就是弹窗里显示的原因 -->
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>DevBox 需要读取你登记的项目目录（如 git 分支与状态、package.json、pom.xml），才能启动项目并显示它们的状态。</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>DevBox 需要读取你登记的项目目录（如 git 分支与状态、package.json、pom.xml），才能启动项目并显示它们的状态。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>DevBox 需要读取你登记的项目目录（如 git 分支与状态、package.json、pom.xml），才能启动项目并显示它们的状态。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>DevBox 需要读取你登记在外置磁盘上的项目目录，才能启动项目并显示它们的状态。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>DevBox 需要读取你登记在网络磁盘上的项目目录，才能启动项目并显示它们的状态。</string>
+</dict>
+</plist>

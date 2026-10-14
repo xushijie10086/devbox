@@ -39,7 +39,7 @@ jobs:
           want="${GITHUB_REF_NAME#v}"
           have=$(node -p "require('./package.json').version")
           if [ "$want" != "$have" ]; then
-            echo "::error::标签是 $GITHUB_REF_NAME，但 package.json 的版本是 $have；请先把所有版本号改成 $want 再打标签"
+            echo "::error::标签是 ${GITHUB_REF_NAME}，但 package.json 的版本是 ${have}；请先把所有版本号改成 $want 再打标签"
             exit 1
           fi
 
