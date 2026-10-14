@@ -1205,9 +1205,13 @@ mod windows_tests {
             "env": {"MY_FLAG": "xyz"},
             "node": {"version": "99.0.0", "path": d.to_string_lossy()},
         }]));
+        // 命令打印完就退出，不是常驻进程，级别不会是 success；这里只关心输出内容
         let out = start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(3)).unwrap();
-        assert_eq!(out.level, "success", "{}", out.message);
+        assert!(out.message.contains("退出码 0"), "{}", out.message);
         let all = logs(&st, "t");
+        // where 会列出 PATH 里所有 node.exe，选定版本的必须排在第一个
+        let first = all.lines().find(|l| l.to_lowercase().ends_with("node.exe")).unwrap_or("");
+        assert_eq!(first.to_lowercase(), d.join("node.exe").to_string_lossy().to_lowercase(), "{all}");
         assert!(all.to_lowercase().contains(&d.join("node.exe").to_string_lossy().to_lowercase()), "{all}");
         assert!(all.contains("flag=xyz"), "{all}");
         assert!(all.contains("使用指定版本: Node 99.0.0"), "{all}");

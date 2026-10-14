@@ -248,7 +248,8 @@ mod tests {
                 .iter()
                 .map(|(id, name, g)| {
                     serde_json::from_value(serde_json::json!({
-                        "id": id, "name": name, "path": "/tmp", "start_command": "sleep 30", "group": g
+                        "id": id, "name": name, "path": crate::testutil::workdir(),
+                        "start_command": crate::testutil::sleep_command(30), "group": g
                     }))
                     .unwrap()
                 })
