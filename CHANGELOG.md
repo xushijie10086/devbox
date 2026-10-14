@@ -1,5 +1,40 @@
 # 更新日志
 
+## 1.3.0 · 2026-10-14
+
+DevBox 现在支持 **Windows** 和 **Linux**，不再只是 macOS 应用。
+
+### 新增
+- **Windows 安装包**（NSIS，装在当前用户目录，不需要管理员权限）；**Linux 安装包**（`.deb` 与 `.AppImage`）。发布流程改为三个系统并行打包、统一发布
+- 项目启停、日志、端口、git、Node / JDK 版本切换、托盘、通知等核心功能三个系统通用
+- Windows：
+  - 启动命令走 `cmd`，不弹黑窗；结束项目时整棵进程树一起结束
+  - 子进程输出按系统代码页解码（中文版 Windows 的 GBK 不再乱码）
+  - 识别 nvm-windows / fnm / Volta / Scoop 装的 Node，以及 Program Files 下各家 JDK
+  - 修改 hosts 通过 UAC 授权，原文件是 CRLF 换行会保持
+  - 在 Windows Terminal（没有则 cmd）/ 资源管理器 / 默认浏览器中打开
+  - 获取启动命令认得 `mvnw.cmd`、`gradlew.bat`、`python`、`.venv\Scripts\python.exe`
+- Linux：
+  - 端口占用查询不再依赖 `lsof`（精简发行版常没装）
+  - 修改 hosts 通过 `pkexec` 授权；打开终端支持常见终端模拟器与 `$TERMINAL`；定位文件走 `xdg-open` / FileManager1
+- 选择项目目录在 Windows / Linux 上用系统自带的文件夹选择框
+- 「本地服务」依赖 Homebrew，非 macOS 上入口自动隐藏
+- 界面文案随系统变化（访达 / 资源管理器 / 文件管理器，⌘ / Ctrl），字体加入 Windows 与 Linux 的回退
+- MCP 适配器按系统查找 `bridge.json`（`%APPDATA%` / `XDG_CONFIG_HOME` / `~/Library/Application Support`）
+
+### 修复
+- 子进程输出里出现非 UTF-8 字节时，日志读取线程会直接退出，之后没人读管道，子进程写满缓冲区就卡死。现在按字节读取再解码
+
+### 工程
+- 平台差异集中到 `src-tauri/src/platform/`（`unix.rs` / `windows.rs` / `listen.rs`），业务代码只调统一接口
+- CI 的 Rust 测试与应用构建扩展到 macOS / Linux / Windows 三个系统；Windows 上新增启动、进程树、版本探测、脚本、hosts 换行等测试
+- Windows 的测试程序和正式程序一样嵌入 Common Controls v6 清单，否则测试程序一启动就崩溃
+- 发布前检查：标签与版本号一致、`CHANGELOG.md` 里有本版本的说明，任何一项不满足就在打包前失败
+
+### 已知限制
+- Windows / Linux 的安装包没有做代码签名：Windows 首次运行 SmartScreen 会提示「未知发布者」
+- Windows 的 UAC 弹窗、Linux 各桌面环境（托盘、`pkexec`、终端）目前只在自动化测试之外通过代码推断，未在真机上逐一验证；遇到问题欢迎反馈
+
 ## 1.2.1 · 2026-10-14
 
 解决 macOS 上反复弹出「DevBox 想访问“文稿”文件夹」的问题。

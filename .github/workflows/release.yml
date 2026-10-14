@@ -1,12 +1,13 @@
 name: Release
 
-# 推送 v* 标签：打包并发布 GitHub Release。
-# 修改本文件的 PR 只会打包验证，不会发布。
+# 推送 v* 标签：三平台打包并发布 GitHub Release。
+# 修改本文件的 PR 与手动运行（workflow_dispatch）只会打包验证，不会发布。
 on:
   push:
     tags: ["v*"]
   pull_request:
     paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,22 +16,15 @@ env:
   RUST_TOOLCHAIN: 1.97.0 # 与 ci.yml 保持一致
 
 jobs:
-  build:
-    name: 打包 (macOS 通用)
-    runs-on: macos-latest
+  check:
+    name: 检查版本与更新日志
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
       - run: npm ci
 
       - name: 标签与版本号必须一致
@@ -39,17 +33,80 @@ jobs:
           want="${GITHUB_REF_NAME#v}"
           have=$(node -p "require('./package.json').version")
           if [ "$want" != "$have" ]; then
-            echo "::error::标签是 ${GITHUB_REF_NAME}，但 package.json 的版本是 ${have}；请先把所有版本号改成 $want 再打标签"
+            echo "::error::标签是 ${GITHUB_REF_NAME}，但 package.json 的版本是 ${have}；请先把所有版本号改成 ${want} 再打标签"
+            exit 1
+          fi
+
+      - name: CHANGELOG.md 里必须有当前版本的说明
+        run: |
+          ver=$(node -p "require('./package.json').version")
+          if ! awk -v v="$ver" '$0 ~ "^## " v {f=1; next} /^## /{f=0} f' CHANGELOG.md | grep -q .; then
+            echo "::error::CHANGELOG.md 里没有 ${ver} 的更新说明"
             exit 1
           fi
 
       - name: 测试
         run: npm test
 
-      - name: 打包 dmg（Apple Silicon + Intel 通用）
-        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg,app
+  build:
+    name: 打包 (${{ matrix.name }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 通用
+            os: macos-latest
+            artifact: devbox-macos
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build_args: --target universal-apple-darwin --bundles dmg,app
+          - name: Windows
+            os: windows-latest
+            artifact: devbox-windows
+            rust_targets: ""
+            build_args: --bundles nsis
+          - name: Linux
+            # 用较老的系统打包，deb / AppImage 才能在更多发行版上运行
+            os: ubuntu-22.04
+            artifact: devbox-linux
+            rust_targets: ""
+            build_args: --bundles deb,appimage
+    defaults:
+      run:
+        shell: bash
+    env:
+      # AppImage 打包工具自己也是 AppImage，CI 里没有 FUSE，需要解包运行
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: 整理产物
+      - name: 安装 Linux 构建依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.rust_targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+
+      - name: 打包
+        run: npm run tauri -- build ${{ matrix.build_args }}
+
+      - name: 整理产物 (macOS)
+        if: runner.os == 'macOS'
         run: |
           set -e
           out=dist-release
@@ -57,12 +114,30 @@ jobs:
           bundle=src-tauri/target/universal-apple-darwin/release/bundle
           cp "$bundle"/dmg/*.dmg "$out"/
           ditto -c -k --sequesterRsrc --keepParent "$bundle/macos/DevBox.app" "$out/DevBox_universal.app.zip"
-          (cd "$out" && shasum -a 256 * > SHA256SUMS.txt)
+          ls -la "$out"
+
+      - name: 整理产物 (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -e
+          out=dist-release
+          mkdir -p "$out"
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe "$out"/
+          ls -la "$out"
+
+      - name: 整理产物 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          out=dist-release
+          mkdir -p "$out"
+          cp src-tauri/target/release/bundle/deb/*.deb "$out"/
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "$out"/
           ls -la "$out"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: devbox-macos
+          name: ${{ matrix.artifact }}
           path: dist-release/*
           if-no-files-found: error
 
@@ -77,15 +152,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: devbox-macos
+          pattern: devbox-*
+          merge-multiple: true
           path: dist-release
+
+      - name: 生成校验值
+        run: |
+          cd dist-release
+          sha256sum * > SHA256SUMS.txt
+          ls -la
 
       - name: 从 CHANGELOG.md 取本版本的说明
         run: |
           ver="${GITHUB_REF_NAME#v}"
           awk -v v="$ver" '$0 ~ "^## " v {f=1; next} /^## /{f=0} f' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then
-            echo "::error::CHANGELOG.md 里没有 $ver 的更新说明"
+            echo "::error::CHANGELOG.md 里没有 ${ver} 的更新说明"
             exit 1
           fi
           cat >> notes.md <<'NOTE'
@@ -94,8 +176,16 @@ jobs:
 
           ### 安装
 
-          下载 `.dmg`，把 DevBox 拖进「应用程序」。应用目前没有做 Apple 签名与公证，首次打开如果提示「无法验证开发者」：
-          在「应用程序」里右键 DevBox → 打开；或者在终端执行 `xattr -cr /Applications/DevBox.app`。
+          | 系统 | 下载 | 说明 |
+          |---|---|---|
+          | macOS | `.dmg` | 拖进「应用程序」。Apple Silicon 与 Intel 通用 |
+          | Windows | `-setup.exe` | 双击安装，装在当前用户目录，不需要管理员权限 |
+          | Linux | `.deb` / `.AppImage` | Debian / Ubuntu 用 `.deb`（`sudo apt install ./DevBox_*.deb`）；其他发行版用 `.AppImage`（`chmod +x` 后直接运行） |
+
+          应用目前没有做代码签名，首次打开系统会拦一下：
+          - **macOS**：提示「无法验证开发者」时，在「应用程序」里右键 DevBox → 打开；或终端执行 `xattr -cr /Applications/DevBox.app`
+          - **Windows**：SmartScreen 提示「已保护你的电脑」时，点「更多信息」→「仍要运行」
+          - **Linux**：无需额外操作
 
           `SHA256SUMS.txt` 是各文件的校验值。
           NOTE

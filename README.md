@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/xushijie10086/devbox/actions/workflows/ci.yml/badge.svg)](https://github.com/xushijie10086/devbox/actions/workflows/ci.yml)
 
-一个面向 macOS 的本地开发辅助桌面应用，用 **Tauri 2 (Rust) + 原生 JS 前端** 构建。集中管理本机的开发项目、端口、hosts 与本地服务，一键启停。
+一个本地开发辅助桌面应用，支持 **macOS、Windows、Linux**，用 **Tauri 2 (Rust) + 原生 JS 前端** 构建。集中管理本机的开发项目、端口、hosts 与本地服务，一键启停。
 
 ## 功能
 
@@ -26,18 +26,46 @@
 - **Hosts 管理**：图形化编辑 `/etc/hosts` 中 DevBox 的托管区块（增删域名映射、启用/停用），保存时弹出系统管理员授权并自动刷新 DNS 缓存。**不会改动区块之外的其它条目。**
 - **日志**：项目行的日志弹窗和「日志」页共用同一个查看器。支持 **ANSI 颜色**（16 / 256 / 真彩色，进度条的 `\r` 覆盖只保留最后一次，光标控制等乱码序列自动去掉）、**错误 / 警告高亮**（`[ERROR]`、`Exception`、`Caused by:`、`npm ERR!`、`error[E0308]` 等；堆栈续行变淡）、**搜索**（不区分大小写，匹配处高亮，⌘F 聚焦）、**级别过滤**（全部 / 警告及以上 / 仅错误）、**复制**（复制当前过滤后看到的内容，不含颜色转义）、**自动滚动**（手动上翻自动暂停，滚回底部恢复）、**清空**、**日志文件**（在访达里定位）。每行日志带递增序号，前端只拉取新增的行、只追加不重绘；页面最多渲染 3000 行。
 - **日志落盘与历史**：每个项目的日志同时追加写入配置目录下的 `logs/<项目>.log`（`日期 时间<TAB>流<TAB>内容`），超过 5MB 轮转成 `.log.1`；重启 DevBox 后自动载入最近 300 行历史并用分隔线隔开；「清空」会连文件一起删。系统消息（`▶ 启动: …` 之类）不按内容判断级别，避免启动命令里恰好含有 `[ERROR]` 字样被误标成错误。
-- **快捷入口**：一键在 编辑器(VSCode) / 浏览器 / 终端 / 访达 中打开项目。
+- **快捷入口**：一键在 编辑器(VSCode) / 浏览器 / 终端 / 文件管理器（访达 / 资源管理器 / 系统默认）中打开项目。
 - **菜单栏托盘与快速启停**：顶栏图标的菜单里列出所有项目（有分组时按分组显示），点一下就启动或停止，不用打开窗口；还有「全部停止」、「系统通知」开关，悬停提示会显示运行中的项目数。菜单只在内容变化时才重建。
-- **系统通知**：项目意外退出（含启动确认之后才崩溃的）、从托盘启停项目的结果，会发 macOS 系统通知，内容是退出原因和最后一行关键输出。窗口在前台聚焦时不重复通知（应用内已有提示）；托盘里的操作因为用户本就没开窗口，总会通知。侧边栏底部的「通知」按钮或托盘菜单都可以关闭。
+- **系统通知**：项目意外退出（含启动确认之后才崩溃的）、从托盘启停项目的结果，会发系统通知，内容是退出原因和最后一行关键输出。窗口在前台聚焦时不重复通知（应用内已有提示）；托盘里的操作因为用户本就没开窗口，总会通知。侧边栏底部的「通知」按钮或托盘菜单都可以关闭。
 - **资源监控**：卡片上显示运行中项目的 CPU / 内存 / 运行时长 / 端口探测状态。
 
-## 环境要求
+## 下载安装
 
-- macOS
+到 [Releases](https://github.com/xushijie10086/devbox/releases) 下载：
+
+| 系统 | 文件 | 安装 |
+|---|---|---|
+| macOS | `DevBox_*_universal.dmg` | 拖进「应用程序」（Apple Silicon / Intel 通用） |
+| Windows 10 / 11 | `DevBox_*_x64-setup.exe` | 双击安装，装在当前用户目录，不需要管理员权限 |
+| Linux | `DevBox_*_amd64.deb` / `DevBox_*_amd64.AppImage` | Debian / Ubuntu：`sudo apt install ./DevBox_*.deb`；其他发行版：`chmod +x` 后直接运行 AppImage |
+
+应用目前没有做代码签名，首次打开系统会拦一下：macOS 右键 → 打开（或 `xattr -cr /Applications/DevBox.app`）；Windows 在 SmartScreen 里点「更多信息」→「仍要运行」。
+
+### 各平台差异
+
+| 功能 | macOS | Windows | Linux |
+|---|---|---|---|
+| 项目启停、日志、端口、git、Node / JDK 切换 | ✓ | ✓ | ✓ |
+| 启动命令的执行方式 | 登录 shell（`/bin/sh -lc`） | `cmd /C`（不弹黑窗） | 登录 shell（`/bin/sh -lc`） |
+| 端口占用查询 | `lsof` | 系统 API | 系统 API（不依赖 `lsof`） |
+| 修改 hosts | 系统密码框（`osascript`） | UAC 授权弹窗 | `pkexec` 授权弹窗（需已安装 polkit） |
+| 打开终端 / 文件管理器 | Terminal / 访达 | Windows Terminal（没有则 cmd）/ 资源管理器 | 常见终端（也认 `$TERMINAL`）/ `xdg-open` |
+| 本地服务（Homebrew） | ✓ | 不支持，入口自动隐藏 | 不支持，入口自动隐藏 |
+| 托盘 | 菜单栏 | 通知区域 | 需要桌面环境支持托盘（GNOME 需装 AppIndicator 扩展） |
+
+## 开发环境要求
+
 - [Node.js](https://nodejs.org) 18+（含 npm）
 - [Rust](https://www.rust-lang.org/tools/install) 稳定版工具链
-- Xcode Command Line Tools：`xcode-select --install`
-- Homebrew（用于服务管理）
+- macOS：Xcode Command Line Tools（`xcode-select --install`）；要用「本地服务」功能需要 Homebrew
+- Windows：[Visual Studio 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（勾选「使用 C++ 的桌面开发」）和 WebView2（Windows 10 / 11 自带）
+- Linux（Debian / Ubuntu）：
+  ```bash
+  sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+    librsvg2-dev libxdo-dev libssl-dev patchelf
+  ```
 
 ## 快速开始
 
@@ -52,11 +80,11 @@ npm install
 npm run tauri dev
 ```
 
-打包为 `.app` / `.dmg`：
+打包（产物在 `src-tauri/target/release/bundle/`，只会生成当前系统对应的格式）：
 
 ```bash
 npm run tauri build
-# 产物在 src-tauri/target/release/bundle/
+# macOS：.app / .dmg；Windows：NSIS 安装包（.exe）；Linux：.deb / .AppImage
 ```
 
 ## 持续集成（CI）
@@ -66,8 +94,11 @@ npm run tauri build
 | 任务 | 内容 |
 |---|---|
 | 前端测试与构建 | `npm test`（含 tauri crate 与 npm 包版本一致性检查）、`npm run build`、MCP 适配器语法检查 |
-| Rust（macOS + Linux） | `cargo clippy -D warnings`、`cargo test --lib`（都带 `--locked`，`Cargo.lock` 不同步会失败） |
-| 应用构建（macOS） | `tauri build --debug --no-bundle`，验证前端和 Rust 能一起构建 |
+| Rust（macOS / Linux / Windows） | `cargo clippy -D warnings`、`cargo test --lib`（都带 `--locked`，`Cargo.lock` 不同步会失败）；三个系统各跑一遍，Windows 上有专门的启动、进程树、版本探测、hosts 换行等测试 |
+| 应用构建（macOS / Linux / Windows） | `tauri build --debug --no-bundle`，验证前端和 Rust 能一起构建 |
+| 签名流程（macOS，仅手动运行） | 验证「创建证书 → 签名 → 打包」整条流程 |
+
+发布见 `.github/workflows/release.yml`：推送 `v*` 标签后，三个系统并行打包，统一创建 GitHub Release。工作流本身的 PR 或手动运行只打包验证、不发布。
 
 Rust 版本固定在工作流顶部的 `RUST_TOOLCHAIN`，避免新版本 clippy 新增规则让 CI 无故变红；升级时改这一处，并在本地先跑 `cargo clippy --all-targets -- -D warnings`。本地提交前可以直接跑：
 
@@ -127,18 +158,23 @@ npm test                           # 前端纯逻辑测试（日志的 ANSI 解�
                                    # 并检查 Rust 的 tauri crate 与 @tauri-apps/api / cli 的主.次版本一致
 ```
 
-## macOS 权限说明
+## 系统权限说明
 
-- **Hosts 写入**：修改 `/etc/hosts` 需要管理员权限。保存时会通过 `osascript` 弹出系统密码框，授权后写入并执行 `dscacheutil -flushcache && killall -HUP mDNSResponder` 刷新 DNS。
-- **快捷入口 / brew**：应用通过登录 shell (`/bin/sh -lc`) 调用命令，以便正确读取 `code`、`brew`、`nvm` 等的 PATH。若某命令找不到，请确认它在你的 shell 配置里可用。
+- **Hosts 写入**：修改 hosts 需要管理员权限，保存时会弹出系统的授权框，授权后写入并刷新 DNS 缓存。
+  - macOS：`osascript` 密码框，写入后执行 `dscacheutil -flushcache && killall -HUP mDNSResponder`。
+  - Windows：UAC 提示（经 PowerShell 提权），文件原来是 CRLF 换行的会保持 CRLF；写入后执行 `ipconfig /flushdns`。
+  - Linux：`pkexec` 授权框（需要系统装了 polkit），写入后如果有 `resolvectl` 会顺带刷新缓存。
+- **快捷入口 / 版本管理**：macOS / Linux 通过登录 shell (`/bin/sh -lc`) 调用命令，以便正确读取 `code`、`brew`、`nvm` 等的 PATH，某命令找不到时请确认它在你的 shell 配置里可用；Windows 通过 `cmd` 调用，读取的是系统与用户的 PATH。
 - 首次通过 Finder 打开打包版本时，若提示"无法验证开发者"，在 系统设置 → 隐私与安全性 中允许即可（未签名应用的正常提示）。
 
 ## 数据存储
 
-项目与项目组配置以 JSON 存于：
+项目与项目组配置以 JSON 存于系统的配置目录下：
 
 ```
-~/Library/Application Support/devbox/config.json
+macOS    ~/Library/Application Support/devbox/config.json
+Windows  %APPDATA%\devbox\config.json
+Linux    ~/.config/devbox/config.json
 ```
 
 ## 项目结构
@@ -160,12 +196,13 @@ devbox/
     └── src/
         ├── main.rs  lib.rs   # 入口 + 命令注册 + 托盘
         ├── models.rs  state.rs
+        ├── platform/         # 平台差异集中在这里：unix.rs / windows.rs / listen.rs（端口枚举）
         └── commands/         # projects/process/ports/hosts/services/logs/shortcuts
 ```
 
 ## 已知限制 / 后续可扩展
 
-- 服务管理目前走 Homebrew；Docker 容器管理、本地 HTTPS 证书 (mkcert) 可作为下一步扩展。
+- 服务管理目前走 Homebrew，仅 macOS 可用；Docker 容器管理、本地 HTTPS 证书 (mkcert) 可作为下一步扩展。
 - 日志走 1 秒轮询获取缓冲（单项目上限 2000 行）；如需持久化到文件可后续增加。
 - 自动重启在健康心跳（约 2.5s）中触发。
 ```
