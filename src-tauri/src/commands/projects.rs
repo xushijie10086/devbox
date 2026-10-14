@@ -267,7 +267,7 @@ pub fn pick_directory() -> Result<Option<String>, String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(test)))]
 #[tauri::command]
 pub async fn pick_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -281,6 +281,13 @@ pub async fn pick_directory(app: tauri::AppHandle) -> Result<Option<String>, Str
     })
     .await
     .map_err(|e| format!("内部错误: {e}"))?
+}
+
+/// 测试构建里的替身：不链接对话框库（原因见 lib.rs 里注册插件处），签名保持一致以便命令注册通过
+#[cfg(all(not(target_os = "macos"), test))]
+#[tauri::command]
+pub async fn pick_directory(_app: tauri::AppHandle) -> Result<Option<String>, String> {
+    Err("测试环境不弹出选择目录对话框".into())
 }
 
 /// 根据工作目录里的配置文件 / 文档，自动探测项目信息用于表单填充

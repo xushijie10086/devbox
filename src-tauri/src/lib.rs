@@ -15,8 +15,10 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
-    // 选择目录：macOS 沿用系统原生的 osascript，其它平台用对话框插件
-    #[cfg(not(target_os = "macos"))]
+    // 选择目录：macOS 沿用系统原生的 osascript，其它平台用对话框插件。
+    // 单元测试的构建里不引入它：Windows 上它依赖 Common Controls v6（需要程序清单），
+    // 而测试程序没有清单，一加载就会 STATUS_ENTRYPOINT_NOT_FOUND；测试本来也用不到对话框。
+    #[cfg(all(not(target_os = "macos"), not(test)))]
     let builder = builder.plugin(tauri_plugin_dialog::init());
     let app = builder
         .manage(AppState::new())
