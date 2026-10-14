@@ -18,9 +18,34 @@ fn listener_helper() {
 }
 
 /// 放进项目启动命令里的一行 shell：监听 127.0.0.1:port，行为像一个正常的服务
+#[cfg(unix)]
 pub fn listen_command(port: u16) -> String {
     let exe = std::env::current_exe().unwrap();
     format!("{ENV}={port} exec '{}' --exact testutil::listener_helper --test-threads=1", exe.display())
+}
+
+/// Windows 版：cmd 里没有 exec，设好环境变量后直接运行（cmd 会留在父进程位置，结束进程树时一并结束）
+#[cfg(windows)]
+pub fn listen_command(port: u16) -> String {
+    let exe = std::env::current_exe().unwrap();
+    format!("set \"{ENV}={port}\" && \"{}\" --exact testutil::listener_helper --test-threads=1", exe.display())
+}
+
+/// 一条睡 `secs` 秒、不占 CPU 的命令
+#[cfg(unix)]
+pub fn sleep_command(secs: u32) -> String {
+    format!("sleep {secs}")
+}
+
+/// Windows 没有 sleep，用 ping 自己（每次间隔 1 秒）计时
+#[cfg(windows)]
+pub fn sleep_command(secs: u32) -> String {
+    format!("ping -n {} 127.0.0.1 >nul", secs + 1)
+}
+
+/// 一个确实存在的目录，当项目工作目录用（Unix 的 /tmp 在 Windows 上并不存在）
+pub fn workdir() -> String {
+    std::env::temp_dir().to_string_lossy().into_owned()
 }
 
 /// 直接起一个监听 127.0.0.1:port 的外部进程（不属于任何 DevBox 项目），等它真的在监听后返回

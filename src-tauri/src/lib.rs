@@ -3,6 +3,7 @@ mod http_api;
 mod logstore;
 mod models;
 mod notify;
+mod platform;
 mod state;
 #[cfg(test)]
 mod testutil;
@@ -13,8 +14,11 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+    // 选择目录：macOS 沿用系统原生的 osascript，其它平台用对话框插件
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+    let app = builder
         .manage(AppState::new())
         .setup(|app| {
             let _ = state::APP_HANDLE.set(app.handle().clone());
@@ -50,6 +54,7 @@ pub fn run() {
             commands::projects::detect_project,
             commands::startcmd::detect_start_commands,
             commands::projects::pick_directory,
+            platform::get_platform,
             // process
             commands::process::start_project,
             commands::process::stop_project,

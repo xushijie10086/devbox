@@ -3,6 +3,7 @@
 // 通过序号增量拉取，只追加新行，不整体重绘。
 
 import { el, toast } from "./ui.js";
+import { fileManagerName, modKeyLabel } from "./platform.js";
 import { parseAnsi, matchRanges, filterLines, formatForCopy, lineLevel, isStackLine } from "./logfmt.js";
 
 const MAX_LINES = 5000; // 前端最多保留的行数
@@ -85,7 +86,7 @@ export function createLogView({ fetchChunk, onClear, onRevealFile, height }) {
   let alive = true;
   let programmatic = false;
 
-  const search = el("input", { class: "search", type: "text", placeholder: "搜索日志…（⌘F）" });
+  const search = el("input", { class: "search", type: "text", placeholder: `搜索日志…（${modKeyLabel()}F）` });
   const levelSel = el("select", { class: "log-select" }, [
     el("option", { value: "all" }, "全部级别"),
     el("option", { value: "warn" }, "警告及以上"),
@@ -106,7 +107,7 @@ export function createLogView({ fetchChunk, onClear, onRevealFile, height }) {
     el("label", { class: "scroll-toggle" }, [auto, el("span", {}, "自动滚动")]),
     el("button", { class: "ghost-btn sm", title: "复制当前显示的日志（已按搜索和级别过滤，不含颜色转义）", onclick: copyVisible }, "复制"),
     el("button", { class: "ghost-btn sm", title: "清空日志（连同磁盘上的日志文件）", onclick: clearAll }, "清空"),
-    onRevealFile ? el("button", { class: "ghost-btn sm", title: "在访达里定位日志文件", onclick: () => onRevealFile() }, "日志文件") : null,
+    onRevealFile ? el("button", { class: "ghost-btn sm", title: `在${fileManagerName()}里定位日志文件`, onclick: () => onRevealFile() }, "日志文件") : null,
   ]);
   const root = el("div", { class: "logview" }, [bar, body]);
 
@@ -226,7 +227,7 @@ export function createLogView({ fetchChunk, onClear, onRevealFile, height }) {
     const rows = filterLines(lines, { term, level });
     if (rows.length === 0) return toast("没有可复制的日志", "info");
     const ok = await copyText(formatForCopy(rows));
-    toast(ok ? `已复制 ${rows.length} 行` : "复制失败，请手动选中后按 ⌘C", ok ? "success" : "error");
+    toast(ok ? `已复制 ${rows.length} 行` : `复制失败，请手动选中后按 ${modKeyLabel()}C`, ok ? "success" : "error");
   }
 
   async function clearAll() {

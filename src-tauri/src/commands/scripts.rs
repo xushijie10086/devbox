@@ -72,7 +72,7 @@ pub fn detect_scripts(dir: &Path) -> Vec<ScriptEntry> {
 
     // ---- Maven ----
     if let Some(pom) = read("pom.xml") {
-        let mvn = if dir.join("mvnw").exists() { "./mvnw" } else { "mvn" };
+        let mvn = crate::platform::wrapper(dir, "mvnw").unwrap_or_else(|| "mvn".into());
         let multi = pom.contains("<modules>");
         out.push(entry("清理并打包（跳过测试）", format!("{mvn} clean package -DskipTests"), "pom.xml", None));
         out.push(entry(
@@ -88,7 +88,7 @@ pub fn detect_scripts(dir: &Path) -> Vec<ScriptEntry> {
 
     // ---- Gradle ----
     if dir.join("build.gradle").exists() || dir.join("build.gradle.kts").exists() {
-        let g = if dir.join("gradlew").exists() { "./gradlew" } else { "gradle" };
+        let g = crate::platform::wrapper(dir, "gradlew").unwrap_or_else(|| "gradle".into());
         out.push(entry("构建（跳过测试）", format!("{g} build -x test"), "Gradle", None));
         out.push(entry("运行测试", format!("{g} test"), "Gradle", None));
         out.push(entry("清理", format!("{g} clean"), "Gradle", None));
@@ -243,8 +243,7 @@ pub fn run_script_blocking(state: &AppState, id: &str, command: &str, label: &st
             )
         }
         Ok(st) => {
-            use std::os::unix::process::ExitStatusExt;
-            let reason = describe_exit(st.code(), st.signal());
+            let reason = describe_exit(st.code(), crate::platform::exit_signal(&st));
             push_log(&buf, "system", format!("✖ 脚本「{label}」失败：{reason}"));
             let tail = tail_since_start(&buf, TAIL_LINES);
             let mut msg = format!("脚本「{label}」失败：{reason}");
@@ -304,6 +303,7 @@ mod tests {
         assert_eq!(detect_scripts(&d)[1].command, "npm run build");
     }
 
+    #[cfg(unix)]
     #[test]
     fn maven_uses_wrapper_and_warns_for_multi_module() {
         let d = dir("mvn", &[("pom.xml", "<project><modules><module>a</module></modules></project>"), ("mvnw", "#!/bin/sh")]);
@@ -318,6 +318,7 @@ mod tests {
         assert_eq!(s[0].command, "mvn clean package -DskipTests");
     }
 
+    #[cfg(unix)]
     #[test]
     fn gradle_cargo_go_python_make() {
         let d = dir("gradle", &[("build.gradle", ""), ("gradlew", "")]);
@@ -352,6 +353,7 @@ mod tests {
         st.log_buffer("p").snapshot().into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
+    #[cfg(unix)]
     #[test]
     fn successful_script_reports_duration_and_logs_output() {
         let st = state("/tmp");
@@ -363,6 +365,7 @@ mod tests {
         assert!(st.jobs.lock().unwrap().is_empty(), "结束后任务记录被清掉");
     }
 
+    #[cfg(unix)]
     #[test]
     fn failing_script_reports_reason_and_last_output() {
         let st = state("/tmp");
@@ -372,6 +375,7 @@ mod tests {
         assert!(st.jobs.lock().unwrap().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn script_uses_the_selected_runtime_and_project_env() {
         use std::os::unix::fs::PermissionsExt;
@@ -393,6 +397,7 @@ mod tests {
         assert!(logs(&st).contains("用的是假node-xyz"), "{}", logs(&st));
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_one_job_per_project_and_cancel_works() {
         let st = std::sync::Arc::new(state("/tmp"));
@@ -416,6 +421,7 @@ mod tests {
         assert!(cancel_job(&st, "p").is_err(), "没有任务可取消");
     }
 
+    #[cfg(unix)]
     #[test]
     fn bad_inputs_are_rejected() {
         let st = state("/tmp");
@@ -425,6 +431,7 @@ mod tests {
         assert!(run_script_blocking(&st, "p", "echo", "x").unwrap_err().contains("工作目录不存在"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn status_exposes_the_running_job() {
         let st = std::sync::Arc::new(state("/tmp"));
@@ -443,4 +450,37 @@ mod tests {
         let _ = t.join();
         assert!(crate::commands::process::compute_statuses(&st)[0].job.is_none());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_build_wrappers_use_cmd_files() {
+        let d = dir("win-wrappers", &[
+            ("pom.xml", "<project><modules><module>a</module></modules></project>"),
+            ("mvnw.cmd", "@echo off"),
+            ("build.gradle", ""),
+            ("gradlew.bat", "@echo off"),
+        ]);
+        let scripts = detect_scripts(&d);
+        let install = scripts.iter().find(|s| s.label.starts_with("安装到本地仓库")).unwrap();
+        assert_eq!(install.command, "mvnw.cmd clean install -DskipTests");
+        let gradle = scripts.iter().find(|s| s.source == "Gradle").unwrap();
+        assert_eq!(gradle.command, "gradlew.bat build -x test");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_script_success_and_failure_are_reported_with_output() {
+        let wd = crate::testutil::workdir();
+        let st = state(&wd);
+        let out = run_script_blocking(&st, "p", "echo building & echo done", "build").unwrap();
+        assert_eq!(out.level, "success");
+        assert!(out.message.contains("脚本「build」完成"), "{}", out.message);
+        assert!(logs(&st).contains("building") && logs(&st).contains("done"), "{}", logs(&st));
+
+        let err = run_script_blocking(&st, "p", "echo boom 1>&2 & exit 4", "install").unwrap_err();
+        assert!(err.contains("脚本「install」失败") && err.contains("退出码 4"), "{err}");
+        assert!(err.contains("boom"), "{err}");
+        assert!(st.jobs.lock().unwrap().is_empty(), "结束后任务表要清空");
+    }
+
 }

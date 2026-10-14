@@ -4,6 +4,7 @@ import * as services from "./views/services.js";
 import * as hosts from "./views/hosts.js";
 import * as logs from "./views/logs.js";
 import { icon } from "./icons.js";
+import { loadPlatform } from "./platform.js";
 import { api } from "./api.js";
 import { confirmDialog, toast, summarizeStart } from "./ui.js";
 import { listen } from "@tauri-apps/api/event";
@@ -68,11 +69,17 @@ nav.addEventListener("click", (e) => {
 
 document.getElementById("refresh-all").addEventListener("click", () => switchView(currentName));
 
-switchView("projects");
+// 先读出当前系统（文案和「服务」页是否可用都取决于它），再显示第一个页面
+loadPlatform()
+  .then((p) => {
+    const servicesBtn = nav.querySelector('[data-view="services"]');
+    if (servicesBtn) servicesBtn.hidden = !p.services; // 「服务」依赖 Homebrew，只有 macOS 有
+  })
+  .finally(() => switchView("projects"));
 
 // ---------- 应用生命周期 ----------
 
-// 退出（关窗口 / 托盘「退出」/ Cmd+Q）时若有运行中的项目，后端会拦下并通知这里确认。
+// 退出（关窗口 / 托盘「退出」/ Cmd+Q / Alt+F4）时若有运行中的项目，后端会拦下并通知这里确认。
 // 退出必然停止项目：项目的输出管道由 DevBox 持有，DevBox 退出后它们会因 SIGPIPE 崩溃。
 let askingQuit = false;
 listen("quit-requested", async (e) => {

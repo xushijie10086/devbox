@@ -31,14 +31,33 @@ pub fn list_runtimes() -> Runtimes {
 
 pub fn installed() -> Runtimes {
     let home = dirs::home_dir().unwrap_or_default();
-    let mut node = scan_node(Path::new("/"), &home, std::env::var_os("NVM_DIR").map(PathBuf::from));
-    for v in scan_brew_node() {
+    // nvm-sh 用 NVM_DIR，nvm-windows 用 NVM_HOME
+    let nvm_env = if cfg!(windows) { "NVM_HOME" } else { "NVM_DIR" };
+    let root = system_root();
+    let mut node = scan_node(&root, &home, std::env::var_os(nvm_env).map(PathBuf::from));
+    #[cfg(unix)]
+    let extra = scan_brew_node();
+    #[cfg(windows)]
+    let extra = scan_system_node_windows();
+    for v in extra {
         if !node.iter().any(|n| n.version == v.version) {
             node.push(v);
         }
     }
     sort_desc(&mut node);
-    Runtimes { node, java: scan_java(Path::new("/"), &home) }
+    Runtimes { node, java: scan_java(&root, &home) }
+}
+
+/// 文件系统根：Unix 是 `/`，Windows 是系统盘根（如 `C:\`）
+fn system_root() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(format!("{}\\", std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into())))
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/")
+    }
 }
 
 // ---------- 启动时注入 ----------
@@ -48,10 +67,10 @@ pub fn installed() -> Runtimes {
 /// 会重排 PATH，写在命令前缀里才能保证在它之后生效。
 pub fn shell_prelude(project: &Project) -> Result<String, String> {
     let mut front: Vec<String> = Vec::new();
-    let mut exports = String::new();
+    let mut java_home: Option<&str> = None;
 
     if let Some(n) = &project.node {
-        if !Path::new(&n.path).join("node").exists() {
+        if !Path::new(&n.path).join(crate::platform::exe("node")).exists() {
             return Err(format!(
                 "所选 Node {} 已不存在（{}），请编辑项目重新选择版本",
                 n.version, n.path
@@ -60,23 +79,18 @@ pub fn shell_prelude(project: &Project) -> Result<String, String> {
         front.push(n.path.clone());
     }
     if let Some(j) = &project.java {
-        if !Path::new(&j.path).join("bin").join("java").exists() {
+        let bin = Path::new(&j.path).join("bin");
+        if !bin.join(crate::platform::exe("java")).exists() {
             return Err(format!(
                 "所选 JDK {} 已不存在（{}），请编辑项目重新选择版本",
                 j.version, j.path
             ));
         }
-        exports.push_str(&format!("export JAVA_HOME={}; ", sh_quote(&j.path)));
-        front.push(format!("{}/bin", j.path));
+        java_home = Some(&j.path);
+        front.push(bin.to_string_lossy().into_owned());
     }
-    if front.is_empty() {
-        return Ok(String::new());
-    }
-    Ok(format!(
-        "export PATH={}:\"$PATH\"; {}",
-        sh_quote(&front.join(":")),
-        exports
-    ))
+    let vars: Vec<(&str, &str)> = java_home.map(|h| ("JAVA_HOME", h)).into_iter().collect();
+    Ok(crate::platform::env_prelude(&front, &vars))
 }
 
 /// 一句话描述项目用了哪些指定版本，写进项目日志
@@ -91,18 +105,13 @@ pub fn describe(project: &Project) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 // ---------- Node 探测 ----------
 
-/// `root` 为文件系统根、`nvm_dir` 为环境变量 NVM_DIR（生产环境传 "/" 和真实值，测试里传临时目录和 None，
-/// 这样结果不受运行机器的环境变量和已装版本影响）
-fn scan_node(root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<RuntimeVersion> {
+/// 各 Node 版本管理器存放版本的目录：(来源, 存放各版本的目录, 版本目录到 node 可执行文件所在目录的相对路径，空表示就在版本目录里)
+#[cfg(not(windows))]
+fn node_roots(root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<(&'static str, PathBuf, &'static str)> {
     let nvm_root = nvm_dir.unwrap_or_else(|| home.join(".nvm"));
-    // (来源, 目录, 版本目录到 bin 的相对路径)
-    let roots: Vec<(&str, PathBuf, &str)> = vec![
+    vec![
         ("nvm", nvm_root.join("versions/node"), "bin"),
         ("fnm", home.join(".local/share/fnm/node-versions"), "installation/bin"),
         ("fnm", home.join("Library/Application Support/fnm/node-versions"), "installation/bin"),
@@ -110,18 +119,62 @@ fn scan_node(root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<RuntimeV
         ("Volta", home.join(".volta/tools/image/node"), "bin"),
         ("asdf", home.join(".asdf/installs/nodejs"), "bin"),
         ("n", root.join("usr/local/n/versions/node"), "bin"),
-    ];
+    ]
+}
 
+/// Windows：node.exe 直接放在版本目录里（不像 Unix 在 bin/ 下）
+#[cfg(windows)]
+fn node_roots(_root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<(&'static str, PathBuf, &'static str)> {
+    let local = home.join("AppData").join("Local");
+    let roaming = home.join("AppData").join("Roaming");
+    vec![
+        ("nvm-windows", nvm_dir.unwrap_or_else(|| roaming.join("nvm")), ""),
+        ("fnm", local.join("fnm").join("node-versions"), "installation"),
+        ("fnm", roaming.join("fnm").join("node-versions"), "installation"),
+        ("Volta", local.join("Volta").join("tools").join("image").join("node"), ""),
+        ("Scoop", home.join("scoop").join("apps").join("nodejs"), ""),
+        ("Scoop", home.join("scoop").join("apps").join("nodejs-lts"), ""),
+    ]
+}
+
+/// Windows 安装包装的 Node 在 Program Files\nodejs，目录名里没有版本号，要执行一下 `node --version`
+#[cfg(windows)]
+fn scan_system_node_windows() -> Vec<RuntimeVersion> {
+    use std::os::windows::process::CommandExt;
+    let mut out = Vec::new();
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        let Some(base) = std::env::var_os(var) else { continue };
+        let dir = PathBuf::from(base).join("nodejs");
+        let exe = dir.join("node.exe");
+        if !exe.exists() {
+            continue;
+        }
+        let Ok(o) = std::process::Command::new(&exe).arg("--version").creation_flags(0x0800_0000).output() else {
+            continue;
+        };
+        let version = String::from_utf8_lossy(&o.stdout).trim().trim_start_matches('v').to_string();
+        if !version.is_empty() && !out.iter().any(|r: &RuntimeVersion| r.version == version) {
+            out.push(RuntimeVersion { version, source: "系统安装".into(), path: dir.to_string_lossy().into_owned() });
+        }
+    }
+    out
+}
+
+/// `root` 为文件系统根、`nvm_dir` 为环境变量 NVM_DIR（生产环境传 "/" 和真实值，测试里传临时目录和 None，
+/// 这样结果不受运行机器的环境变量和已装版本影响）
+fn scan_node(root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<RuntimeVersion> {
+    let node_exe = crate::platform::exe("node");
     let mut found: Vec<RuntimeVersion> = Vec::new();
-    for (source, versions_dir, rel_bin) in roots {
+    for (source, versions_dir, rel_bin) in node_roots(root, home, nvm_dir) {
         for dir in sub_dirs(&versions_dir) {
-            let bin = dir.join(rel_bin);
-            if !bin.join("node").exists() {
+            let bin = if rel_bin.is_empty() { dir.clone() } else { dir.join(rel_bin) };
+            if !bin.join(&node_exe).exists() {
                 continue;
             }
             let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
             let version = name.trim_start_matches('v').to_string();
-            if version.is_empty() || found.iter().any(|f| f.version == version) {
+            // 目录名得像个版本号：跳过 current 这类软链 / 别名目录
+            if !version.starts_with(|c: char| c.is_ascii_digit()) || found.iter().any(|f| f.version == version) {
                 continue; // 同一版本多处安装，只保留优先级靠前的来源
             }
             found.push(RuntimeVersion {
@@ -136,6 +189,7 @@ fn scan_node(root: &Path, home: &Path, nvm_dir: Option<PathBuf>) -> Vec<RuntimeV
 }
 
 /// Homebrew 的 node@XX：目录名里没有完整版本号，要执行一下 `node --version`
+#[cfg(unix)]
 fn scan_brew_node() -> Vec<RuntimeVersion> {
     let mut out = Vec::new();
     for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
@@ -173,7 +227,11 @@ fn scan_java(root: &Path, home: &Path) -> Vec<RuntimeVersion> {
         ("SDKMAN".into(), home.join(".sdkman/candidates/java"), ""),
         ("asdf".into(), home.join(".asdf/installs/java"), ""),
         ("系统".into(), sys("/usr/lib/jvm"), ""),
+        // IntelliJ IDEA 下载的 JDK（macOS / Linux / Windows 都放这）
+        ("IntelliJ".into(), home.join(".jdks"), ""),
     ];
+    #[cfg(windows)]
+    roots.extend(windows_java_roots(root, home));
     // Homebrew 的 openjdk / openjdk@17：名字带版本，位于 opt 下
     for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
         for dir in sub_dirs(&sys(prefix)) {
@@ -184,6 +242,7 @@ fn scan_java(root: &Path, home: &Path) -> Vec<RuntimeVersion> {
         }
     }
 
+    let java_exe = crate::platform::exe("java");
     let mut found: Vec<RuntimeVersion> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
     for (source, parent, rel_home) in roots {
@@ -192,7 +251,7 @@ fn scan_java(root: &Path, home: &Path) -> Vec<RuntimeVersion> {
                 continue; // SDKMAN 的 current 只是软链
             }
             let java_home = if rel_home.is_empty() { dir.clone() } else { dir.join(rel_home) };
-            if !java_home.join("bin/java").exists() {
+            if !java_home.join("bin").join(java_exe.as_str()).exists() {
                 continue;
             }
             // 软链指向同一个 JDK 时只记一次
@@ -217,6 +276,34 @@ fn scan_java(root: &Path, home: &Path) -> Vec<RuntimeVersion> {
     }
     sort_desc(&mut found);
     found
+}
+
+/// Windows 上各家 JDK 安装包的默认位置（每个子目录是一个 JDK，里面有 bin\\java.exe 和 release）
+#[cfg(windows)]
+fn windows_java_roots(root: &Path, home: &Path) -> Vec<(String, PathBuf, &'static str)> {
+    let mut roots: Vec<(String, PathBuf, &'static str)> = Vec::new();
+    for pf in [root.join("Program Files"), root.join("Program Files (x86)")] {
+        for (label, sub) in [
+            ("Oracle", "Java"),
+            ("Eclipse Adoptium", "Eclipse Adoptium"),
+            ("Microsoft", "Microsoft"),
+            ("Zulu", "Zulu"),
+            ("Corretto", "Amazon Corretto"),
+            ("Liberica", "BellSoft"),
+            ("Semeru", "Semeru"),
+            ("GraalVM", "GraalVM"),
+        ] {
+            roots.push((label.to_string(), pf.join(sub), ""));
+        }
+    }
+    // Scoop：apps\<名字>-jdk\<版本>
+    for app in sub_dirs(&home.join("scoop").join("apps")) {
+        let name = app.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+        if name.contains("jdk") {
+            roots.push(("Scoop".to_string(), app, ""));
+        }
+    }
+    roots
 }
 
 /// 读取 JDK 目录下的 release 文件，拿到版本号与发行方；读不到就用目录名
@@ -516,6 +603,7 @@ fn sort_desc(list: &mut [RuntimeVersion]) {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn tmp(name: &str) -> PathBuf {
@@ -525,6 +613,7 @@ mod tests {
         d
     }
 
+    #[cfg(unix)]
     fn script(path: &Path, body: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -537,6 +626,7 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
+    #[cfg(unix)]
     #[test]
     fn scans_node_from_several_managers_and_sorts_desc() {
         let home = tmp("node");
@@ -553,6 +643,7 @@ mod tests {
         assert!(got[0].path.ends_with("installation/bin"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn scans_java_reads_release_and_dedups_symlinks() {
         let root = tmp("java-root");
@@ -584,6 +675,7 @@ mod tests {
         assert!(version_key("9.0.1") < version_key("17.0.1"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn prelude_is_empty_without_choice_and_quotes_paths() {
         assert_eq!(shell_prelude(&project(serde_json::json!({}))).unwrap(), "");
@@ -607,6 +699,7 @@ mod tests {
         assert!(shell_prelude(&p).unwrap_err().contains("JDK 17"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn selected_versions_actually_take_effect_in_a_shell() {
         // 真正用 sh 跑一遍：PATH 里先找到我们的 node，JAVA_HOME 被设置
@@ -666,4 +759,72 @@ mod tests {
         assert!(pick_node("16", &inst).is_none());
         assert!(pick_node(">=99", &inst).is_none());
     }
+
+    #[cfg(windows)]
+    fn touch(base: &Path, rel: &str, body: &str) {
+        let p = base.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, body).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scans_node_from_windows_managers_dedups_and_skips_aliases() {
+        let home = tmp("win-node");
+        touch(&home, "AppData/Roaming/nvm/v18.19.1/node.exe", ""); // nvm-windows
+        touch(&home, "AppData/Roaming/nvm/v20.11.0/node.exe", "");
+        touch(&home, "AppData/Local/fnm/node-versions/v22.1.0/installation/node.exe", "");
+        touch(&home, "AppData/Local/Volta/tools/image/node/20.11.0/node.exe", ""); // 与 nvm 重复，应被去重
+        touch(&home, "scoop/apps/nodejs/21.0.0/node.exe", "");
+        touch(&home, "scoop/apps/nodejs/current/node.exe", ""); // current 是别名，要跳过
+        fs::create_dir_all(home.join("AppData/Roaming/nvm/v16.0.0")).unwrap(); // 没有 node.exe，应忽略
+
+        let got = scan_node(&home, &home, None);
+        let versions: Vec<_> = got.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(versions, vec!["22.1.0", "21.0.0", "20.11.0", "18.19.1"]);
+        assert_eq!(got[2].source, "nvm-windows", "重复版本保留优先级靠前的来源");
+        assert!(got[0].path.ends_with("installation"), "{}", got[0].path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scans_windows_jdks_from_program_files_and_scoop() {
+        let root = tmp("win-jdk-root");
+        let home = tmp("win-jdk-home");
+        touch(&root, "Program Files/Eclipse Adoptium/jdk-17.0.9.9-hotspot/bin/java.exe", "");
+        touch(&root, "Program Files/Eclipse Adoptium/jdk-17.0.9.9-hotspot/release", "JAVA_VERSION=\"17.0.9\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\n");
+        touch(&root, "Program Files/Java/jdk-21/bin/java.exe", "");
+        touch(&root, "Program Files/Java/jdk-21/release", "JAVA_VERSION=\"21.0.1\"\n");
+        touch(&root, "Program Files/Microsoft/Edge/msedge.exe", ""); // 不是 JDK，要忽略
+        touch(&home, "scoop/apps/temurin8-jdk/8.0.392/bin/java.exe", "");
+        touch(&home, "scoop/apps/temurin8-jdk/8.0.392/release", "JAVA_VERSION=\"1.8.0_392\"\n");
+        touch(&home, "scoop/apps/temurin8-jdk/current/bin/java.exe", ""); // current 只是别名
+        touch(&home, "scoop/apps/git/2.40.0/bin/git.exe", ""); // 名字里没有 jdk 的应用不扫
+
+        let got = scan_java(&root, &home);
+        let versions: Vec<_> = got.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(versions, vec!["21.0.1", "17.0.9", "1.8.0_392"]);
+        assert!(got[1].path.ends_with("jdk-17.0.9.9-hotspot"), "{}", got[1].path);
+        assert!(got[1].source.contains("Eclipse Adoptium"), "{}", got[1].source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_prelude_checks_exe_names_and_uses_set() {
+        let d = tmp("win-prelude");
+        touch(&d, "node/node.exe", "");
+        touch(&d, "jdk/bin/java.exe", "");
+        let p = project(serde_json::json!({
+            "node": {"version": "20.0.0", "path": d.join("node").to_string_lossy()},
+            "java": {"version": "17", "path": d.join("jdk").to_string_lossy()},
+        }));
+        let pre = shell_prelude(&p).unwrap();
+        assert!(pre.starts_with("set \"PATH="), "{pre}");
+        assert!(pre.contains(";%PATH%\" && "), "{pre}");
+        assert!(pre.contains(&format!("set \"JAVA_HOME={}\"", d.join("jdk").display())), "{pre}");
+        // 版本目录里没有 node.exe：要给出明确提示，而不是悄悄用系统的
+        let e = shell_prelude(&project(serde_json::json!({"node": {"version": "18.0.0", "path": d.join("none").to_string_lossy()}}))).unwrap_err();
+        assert!(e.contains("Node 18.0.0") && e.contains("已不存在"), "{e}");
+    }
+
 }

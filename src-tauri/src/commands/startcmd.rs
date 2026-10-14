@@ -147,7 +147,7 @@ pub(crate) fn maven_modules(pom: &str) -> Vec<String> {
 
 fn maven(dir: &Path, out: &mut Vec<StartCandidate>) {
     let Some(pom) = rd(dir, "pom.xml") else { return };
-    let mvn = if dir.join("mvnw").exists() { "./mvnw" } else { "mvn" };
+    let mvn = crate::platform::wrapper(dir, "mvnw").unwrap_or_else(|| "mvn".into());
     let modules = maven_modules(&pom);
     let boot = |p: &str| p.contains("spring-boot-maven-plugin");
 
@@ -222,7 +222,7 @@ fn gradle(dir: &Path, out: &mut Vec<StartCandidate>) {
     if root.is_none() && !has_settings {
         return;
     }
-    let g = if dir.join("gradlew").exists() { "./gradlew" } else { "gradle" };
+    let g = crate::platform::wrapper(dir, "gradlew").unwrap_or_else(|| "gradle".into());
     if let Some(task) = root.as_deref().and_then(gradle_run_task) {
         out.push(cand(format!("{g} {task}"), task, "Gradle", None));
     }
@@ -300,12 +300,10 @@ fn python(dir: &Path, out: &mut Vec<StartCandidate>) {
         "pipenv run python".into()
     } else if dir.join("uv.lock").exists() {
         "uv run python".into()
-    } else if dir.join(".venv/bin/python").exists() {
-        ".venv/bin/python".into()
-    } else if dir.join("venv/bin/python").exists() {
-        "venv/bin/python".into()
+    } else if let Some(venv) = crate::platform::venv_python(dir) {
+        venv
     } else {
-        "python3".into()
+        crate::platform::PYTHON.into()
     };
 
     let before = out.len();
@@ -406,6 +404,36 @@ mod tests {
         start_candidates(d).into_iter().map(|c| c.command).collect()
     }
 
+    // 各平台的文件名 / 命令写法不同：Unix 是 ./mvnw 和 .venv/bin/python，Windows 是 mvnw.cmd 和 .venv\\Scripts\\python.exe
+    #[cfg(unix)]
+    const MVNW_FILE: &str = "mvnw";
+    #[cfg(windows)]
+    const MVNW_FILE: &str = "mvnw.cmd";
+    #[cfg(unix)]
+    const MVNW: &str = "./mvnw";
+    #[cfg(windows)]
+    const MVNW: &str = "mvnw.cmd";
+    #[cfg(unix)]
+    const GRADLEW_FILE: &str = "gradlew";
+    #[cfg(windows)]
+    const GRADLEW_FILE: &str = "gradlew.bat";
+    #[cfg(unix)]
+    const GRADLEW: &str = "./gradlew";
+    #[cfg(windows)]
+    const GRADLEW: &str = "gradlew.bat";
+    #[cfg(unix)]
+    const VENV_FILE: &str = ".venv/bin/python";
+    #[cfg(windows)]
+    const VENV_FILE: &str = ".venv/Scripts/python.exe";
+    #[cfg(unix)]
+    const VENV_PY: &str = ".venv/bin/python";
+    #[cfg(windows)]
+    const VENV_PY: &str = ".venv\\Scripts\\python.exe";
+    #[cfg(unix)]
+    const PY: &str = "python3";
+    #[cfg(windows)]
+    const PY: &str = "python";
+
     const BOOT: &str = "<project><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
 
     #[test]
@@ -454,8 +482,8 @@ mod tests {
     fn maven_single_module_and_wrapper() {
         let d = dir("mvn1", &[("pom.xml", BOOT)]);
         assert_eq!(cmds(&d), ["mvn spring-boot:run"]);
-        let d = dir("mvn-w", &[("pom.xml", BOOT), ("mvnw", "")]);
-        assert_eq!(cmds(&d), ["./mvnw spring-boot:run"]);
+        let d = dir("mvn-w", &[("pom.xml", BOOT), (MVNW_FILE, "")]);
+        assert_eq!(cmds(&d), [format!("{MVNW} spring-boot:run")]);
         let d = dir("mvn-q", &[("pom.xml", "<project><plugin>quarkus-maven-plugin</plugin></project>")]);
         assert_eq!(cmds(&d), ["mvn quarkus:dev"]);
         let d = dir("mvn-unknown", &[("pom.xml", "<project/>")]);
@@ -487,8 +515,8 @@ mod tests {
 
     #[test]
     fn gradle_tasks() {
-        let d = dir("g-boot", &[("build.gradle", "plugins { id 'org.springframework.boot' version '3.2.0' }"), ("gradlew", "")]);
-        assert_eq!(cmds(&d), ["./gradlew bootRun"]);
+        let d = dir("g-boot", &[("build.gradle", "plugins { id 'org.springframework.boot' version '3.2.0' }"), (GRADLEW_FILE, "")]);
+        assert_eq!(cmds(&d), [format!("{GRADLEW} bootRun")]);
         let d = dir("g-app", &[("build.gradle.kts", "plugins {\n    application\n}\n")]);
         assert_eq!(cmds(&d), ["gradle run"]);
         // 根项目只声明插件不应用：找带插件的子项目
@@ -520,13 +548,13 @@ mod tests {
     #[test]
     fn python_frameworks_and_environments() {
         let d = dir("py-django", &[("requirements.txt", "django"), ("manage.py", "")]);
-        assert_eq!(cmds(&d), ["python3 manage.py runserver"]);
-        let d = dir("py-fastapi", &[("requirements.txt", "fastapi\nuvicorn"), ("app/main.py", ""), (".venv/bin/python", "")]);
-        assert_eq!(cmds(&d), [".venv/bin/python -m uvicorn app.main:app --reload"], "优先用项目自己的虚拟环境");
+        assert_eq!(cmds(&d), [format!("{PY} manage.py runserver")]);
+        let d = dir("py-fastapi", &[("requirements.txt", "fastapi\nuvicorn"), ("app/main.py", ""), (VENV_FILE, "")]);
+        assert_eq!(cmds(&d), [format!("{VENV_PY} -m uvicorn app.main:app --reload")], "优先用项目自己的虚拟环境");
         let d = dir("py-poetry", &[("pyproject.toml", "[tool.poetry]\nname='x'\n[tool.poetry.dependencies]\nflask='*'"), ("app.py", "")]);
         assert_eq!(cmds(&d), ["poetry run python -m flask run --debug"]);
         let d = dir("py-script", &[("requirements.txt", "requests"), ("main.py", "")]);
-        assert_eq!(cmds(&d), ["python3 main.py"]);
+        assert_eq!(cmds(&d), [format!("{PY} main.py")]);
         let d = dir("py-none", &[("requirements.txt", "requests")]);
         assert!(cmds(&d).is_empty());
     }

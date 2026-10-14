@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { el, toast, guard, fmtUptime, confirmDialog, choiceDialog, summarizeStart, summarizePull } from "../ui.js";
 import { icon } from "../icons.js";
 import { createLogView } from "../logview.js";
+import { fileManagerName, runtimeSources } from "../platform.js";
 
 // 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
 const TAB_ALL = "__all__";
@@ -474,7 +475,7 @@ export function mount(root) {
         iconBtn("code", "在编辑器打开", () => guard(api.openInEditor(p.path, p.editor))),
         p.url && iconBtn("browser", "在浏览器打开", () => guard(api.openUrl(p.url))),
         iconBtn("terminal", "在终端打开", () => guard(api.openTerminal(p.path))),
-        iconBtn("folder", "在访达显示", () => guard(api.revealInFinder(p.path))),
+        iconBtn("folder", `在${fileManagerName()}显示`, () => guard(api.revealInFinder(p.path))),
         iconBtn("pull", pulling.has(p.id) ? "正在拉取代码…" : "拉取最新代码（git pull）", () => pull(p), pulling.has(p.id) ? "busy" : ""),
         iconBtn("logsView", "查看日志", () => openLogModal(p)), // 进程退出后日志仍保留，便于排查启动失败
         iconBtn("edit", "编辑", () => openEditor(p)),
@@ -788,7 +789,7 @@ export function mount(root) {
       options.push(el("option", { value: current.path, selected: "selected" }, `⚠ ${label} ${current.version}（本机未检测到，可能已卸载）`));
     }
     const sel = el("select", {}, options);
-    const emptyHint = list.length === 0 ? `没有检测到本机安装的 ${label}（支持 ${kind === "node" ? "nvm / fnm / Volta / asdf / Homebrew" : "系统 JVM / SDKMAN / asdf / Homebrew"}）` : null;
+    const emptyHint = list.length === 0 ? `没有检测到本机安装的 ${label}（支持 ${runtimeSources(kind)}）` : null;
     return {
       sel, emptyHint,
       /** 当前选择对应的 {version, path}；选「系统默认」为 null */
@@ -1002,7 +1003,7 @@ export function mount(root) {
       el("div", { class: "path-row" }, [pathInput, browseBtn, detectBtn]),
     ]);
 
-    // 「浏览」：弹出 macOS 原生选择文件夹对话框
+    // 「浏览」：弹出系统原生的选择文件夹对话框
     browseBtn.onclick = async () => {
       browseBtn.disabled = true;
       try {

@@ -2,51 +2,13 @@ use crate::commands::process::collect_descendants;
 use crate::models::{PortInfo, Project};
 use serde::Serialize;
 use crate::state::AppState;
-use std::process::Command;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, Signal, System};
 use tauri::State;
 
 /// 列出所有处于 LISTEN 状态的 TCP 端口占用
 #[tauri::command]
 pub fn list_ports() -> Result<Vec<PortInfo>, String> {
-    let output = Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
-        .output()
-        .map_err(|e| format!("执行 lsof 失败: {e}"))?;
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut result = Vec::new();
-
-    for line in text.lines().skip(1) {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 9 {
-            continue;
-        }
-        let process = parts[0].to_string();
-        let pid: u32 = match parts[1].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let protocol = parts[7].to_string();
-        let address = parts[8].to_string();
-        let port = match address.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
-            Some(p) => p,
-            None => continue,
-        };
-        result.push(PortInfo {
-            port,
-            pid,
-            process,
-            protocol,
-            address,
-            project: None,
-            group: None,
-        });
-    }
-
-    result.sort_by_key(|p| p.port);
-    result.dedup_by_key(|p| (p.port, p.pid));
-    Ok(result)
+    crate::platform::listening_ports()
 }
 
 /// 只列出与已登记项目相关的监听端口，并标注所属项目。
@@ -125,7 +87,7 @@ pub fn describe_holders(holders: &[PortHolder]) -> String {
         .join("、")
 }
 
-/// 检测某端口当前被谁占用（lsof 不可用时返回空，不阻塞启动）
+/// 检测某端口当前被谁占用（读取失败时返回空，不阻塞启动）
 pub fn who_holds(state: &AppState, port: u16) -> Vec<PortHolder> {
     let Ok(all) = list_ports() else { return vec![] };
     let projects = state.config.lock().unwrap().projects.clone();
@@ -147,7 +109,7 @@ pub fn check_project_port(id: String, state: State<AppState>) -> Result<PortChec
     let Some(port) = project.port else {
         return Ok(PortCheck { port: None, holders: vec![] });
     };
-    // lsof 失败要让调用方知道（界面会忽略并照常启动），不能当成「端口空闲」
+    // 读取端口失败要让调用方知道（界面会忽略并照常启动），不能当成「端口空闲」
     let all = list_ports()?;
     let projects = state.config.lock().unwrap().projects.clone();
     Ok(PortCheck { port: Some(port), holders: holders_of(port, all, &projects, &running_trees(&state)) })
@@ -214,20 +176,10 @@ pub fn kill_process(pid: u32, port: Option<u16>) -> Result<(), String> {
 
 /// 查询当前正在监听指定端口的所有进程 pid
 fn pids_on_port(port: u16) -> Vec<u32> {
-    let iarg = format!("-iTCP:{port}");
-    let output = Command::new("lsof")
-        .args(["-nP", "-t", "-sTCP:LISTEN", iarg.as_str()])
-        .output();
-    match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .filter_map(|l| l.trim().parse::<u32>().ok())
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    crate::platform::pids_on_port(port)
 }
 
-/// 结束某 pid 及其所有后代进程：sysinfo 发 TERM→KILL，并用系统 kill -9 兜底。
+/// 结束某 pid 及其所有后代进程：sysinfo 发 TERM→KILL（Windows 没有 TERM，直接结束），并用系统强杀兜底。
 /// 返回是否至少命中一个进程。
 fn kill_pid_tree(pid: u32) -> bool {
     let mut sys = System::new_with_specifics(
@@ -262,10 +214,9 @@ fn kill_pid_tree(pid: u32) -> bool {
             proc_.kill();
         }
     }
-    // 系统 kill -9 兜底（sysinfo 偶尔投递失败）
+    // 系统强杀兜底（sysinfo 偶尔投递失败）
     for p in &targets {
-        let pid_s = p.as_u32().to_string();
-        let _ = Command::new("kill").args(["-9", pid_s.as_str()]).output();
+        crate::platform::force_kill(p.as_u32());
     }
     killed_any
 }
@@ -274,9 +225,14 @@ fn kill_pid_tree(pid: u32) -> bool {
 mod tests {
     use super::*;
 
+    /// macOS 靠 lsof 枚举端口（没装就跳过）；其它平台用 listeners 库，不需要任何外部命令
+    fn port_listing_available() -> bool {
+        cfg!(not(target_os = "macos")) || std::process::Command::new("lsof").arg("-v").output().is_ok()
+    }
+
     fn project(id: &str, name: &str, port: Option<u16>) -> Project {
         serde_json::from_value(serde_json::json!({
-            "id": id, "name": name, "path": "/tmp", "start_command": "x", "port": port
+            "id": id, "name": name, "path": crate::testutil::workdir(), "start_command": "x", "port": port
         }))
         .unwrap()
     }
@@ -354,7 +310,7 @@ mod tests {
 
     #[test]
     fn external_listener_is_found_by_lsof() {
-        if Command::new("lsof").arg("-v").output().is_err() {
+        if !port_listing_available() {
             return;
         }
         let mut child = crate::testutil::spawn_listener(31976);
@@ -371,12 +327,12 @@ mod tests {
 
     #[test]
     fn listener_started_by_a_devbox_project_is_attributed_to_it() {
-        if Command::new("lsof").arg("-v").output().is_err() {
+        if !port_listing_available() {
             return;
         }
         let st = AppState::for_test(crate::models::Config {
             projects: vec![serde_json::from_value(serde_json::json!({
-                "id": "db", "name": "数据库", "path": "/tmp", "port": 31977,
+                "id": "db", "name": "数据库", "path": crate::testutil::workdir(), "port": 31977,
                 "start_command": crate::testutil::listen_command(31977)
             }))
             .unwrap()],
@@ -391,13 +347,13 @@ mod tests {
 
     #[test]
     fn start_warning_names_who_already_holds_the_port() {
-        if Command::new("lsof").arg("-v").output().is_err() {
+        if !port_listing_available() {
             return;
         }
         let mut squatter = crate::testutil::spawn_listener(31978);
         let st = AppState::for_test(crate::models::Config {
             projects: vec![serde_json::from_value(serde_json::json!({
-                "id": "p", "name": "后端", "path": "/tmp", "port": 31978, "start_command": "sleep 30"
+                "id": "p", "name": "后端", "path": crate::testutil::workdir(), "port": 31978, "start_command": crate::testutil::sleep_command(30)
             }))
             .unwrap()],
             ..Default::default()

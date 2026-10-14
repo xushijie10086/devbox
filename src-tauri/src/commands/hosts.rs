@@ -1,28 +1,27 @@
 use crate::models::HostEntry;
-use std::process::Command;
+use crate::platform::{hosts_path, write_hosts_elevated};
 
-const HOSTS_PATH: &str = "/etc/hosts";
 const BEGIN: &str = "# >>> devbox managed >>>";
 const END: &str = "# <<< devbox managed <<<";
 
 /// 读取 DevBox 管理块内的 hosts 记录
 #[tauri::command]
 pub fn get_hosts() -> Result<Vec<HostEntry>, String> {
-    let content = std::fs::read_to_string(HOSTS_PATH).map_err(|e| e.to_string())?;
+    let content = std::fs::read_to_string(hosts_path()).map_err(|e| e.to_string())?;
     let block = extract_block(&content).unwrap_or_default();
     Ok(block.lines().filter_map(parse_line).collect())
 }
 
-/// 返回完整 /etc/hosts 原文（只读展示用）
+/// 返回完整 hosts 原文（只读展示用）
 #[tauri::command]
 pub fn get_hosts_raw() -> Result<String, String> {
-    std::fs::read_to_string(HOSTS_PATH).map_err(|e| e.to_string())
+    std::fs::read_to_string(hosts_path()).map_err(|e| e.to_string())
 }
 
 /// 用给定记录重建 DevBox 管理块，块外内容原样保留。需要管理员授权。
 #[tauri::command]
 pub fn save_hosts(entries: Vec<HostEntry>) -> Result<(), String> {
-    let current = std::fs::read_to_string(HOSTS_PATH).map_err(|e| e.to_string())?;
+    let current = std::fs::read_to_string(hosts_path()).map_err(|e| e.to_string())?;
 
     let mut block = String::new();
     block.push_str(BEGIN);
@@ -40,8 +39,8 @@ pub fn save_hosts(entries: Vec<HostEntry>) -> Result<(), String> {
     }
     block.push_str(END);
 
-    let new_content = replace_block(&current, &block);
-    write_hosts_as_admin(&new_content)
+    let new_content = match_line_endings(&current, replace_block(&current, &block));
+    write_hosts_elevated(&new_content)
 }
 
 // ---------- 解析辅助 ----------
@@ -102,29 +101,61 @@ fn parse_line(line: &str) -> Option<HostEntry> {
     })
 }
 
-/// 借助 osascript 以管理员权限写入 /etc/hosts，并刷新 DNS 缓存
-fn write_hosts_as_admin(content: &str) -> Result<(), String> {
-    let tmp = std::env::temp_dir().join("devbox_hosts.tmp");
-    std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
-
-    let shell = format!(
-        "cp '{}' '{}' && dscacheutil -flushcache && killall -HUP mDNSResponder",
-        tmp.display(),
-        HOSTS_PATH
-    );
-    let script = format!("do shell script \"{}\" with administrator privileges", shell);
-
-    let status = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .status()
-        .map_err(|e| format!("调用 osascript 失败: {e}"))?;
-
-    let _ = std::fs::remove_file(&tmp);
-
-    if status.success() {
-        Ok(())
+/// 文件原来用 CRLF（Windows 的 hosts 通常如此）就把整份内容统一成 CRLF，避免新旧换行混在一起
+fn match_line_endings(original: &str, content: String) -> String {
+    if original.contains("\r\n") {
+        content.replace("\r\n", "\n").replace('\n', "\r\n")
     } else {
-        Err("写入 /etc/hosts 被取消或失败（需要管理员授权）".into())
+        content
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BLOCK: &str = "# >>> devbox managed >>>\n127.0.0.1\tapp.local\n# <<< devbox managed <<<";
+
+    #[test]
+    fn a_new_block_is_appended_and_an_existing_one_is_replaced_in_place() {
+        let fresh = "127.0.0.1 localhost\n";
+        let out = replace_block(fresh, BLOCK);
+        assert!(out.starts_with("127.0.0.1 localhost\n\n# >>> devbox managed >>>"), "{out}");
+        assert!(out.ends_with("# <<< devbox managed <<<\n"), "{out}");
+
+        let old = format!("a\n{}\nz\n", "# >>> devbox managed >>>\n1.1.1.1\told\n# <<< devbox managed <<<");
+        let out = replace_block(&old, BLOCK);
+        assert_eq!(out, format!("a\n{BLOCK}\nz\n"), "块外内容原样保留，块内换成新的");
+    }
+
+    #[test]
+    fn entries_round_trip_through_the_block() {
+        let content = "# >>> devbox managed >>>\n127.0.0.1\tapp.local api.local  # 开发\n# 10.0.0.2\tstaging.local\n# <<< devbox managed <<<\n";
+        let block = extract_block(content).unwrap();
+        let entries: Vec<HostEntry> = block.lines().filter_map(parse_line).collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!((entries[0].ip.as_str(), entries[0].enabled), ("127.0.0.1", true));
+        assert_eq!(entries[0].hostnames, ["app.local", "api.local"]);
+        assert_eq!(entries[0].comment.as_deref(), Some("开发"));
+        assert_eq!((entries[1].ip.as_str(), entries[1].enabled), ("10.0.0.2", false), "被注释掉的记录是「已停用」");
+    }
+
+    #[test]
+    fn crlf_files_stay_crlf_and_lf_files_stay_lf() {
+        // Windows 的 hosts 通常是 CRLF：新旧内容不能换行风格混在一起
+        let crlf_original = "127.0.0.1 localhost\r\n";
+        let merged = replace_block(crlf_original, BLOCK);
+        let out = match_line_endings(crlf_original, merged);
+        assert!(out.contains("\r\n") && !out.replace("\r\n", "").contains('\n'), "每个换行都必须是 CRLF: {out:?}");
+
+        let lf_original = "127.0.0.1 localhost\n";
+        let out = match_line_endings(lf_original, replace_block(lf_original, BLOCK));
+        assert!(!out.contains('\r'), "{out:?}");
+    }
+
+    #[test]
+    fn already_crlf_content_is_not_doubled() {
+        let out = match_line_endings("a\r\n", "x\r\ny\nz".to_string());
+        assert_eq!(out, "x\r\ny\r\nz");
     }
 }

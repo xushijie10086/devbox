@@ -237,8 +237,9 @@ pub fn delete_project(id: String, state: State<AppState>) -> Result<(), String> 
     Ok(())
 }
 
-/// 弹出 macOS 原生「选择文件夹」对话框，返回所选目录的绝对路径
-/// 用户取消时返回 Ok(None)
+/// 弹出系统「选择文件夹」对话框，返回所选目录的绝对路径；用户取消时返回 Ok(None)。
+/// macOS 沿用原生的 osascript；Windows / Linux 用对话框插件（见下一个同名函数）。
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn pick_directory() -> Result<Option<String>, String> {
     let script = r#"POSIX path of (choose folder with prompt "选择项目工作目录")"#;
@@ -264,6 +265,22 @@ pub fn pick_directory() -> Result<Option<String>, String> {
             Err(err.trim().to_string())
         }
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn pick_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    // blocking_pick_folder 会一直阻塞到用户选完，放到阻塞线程里，不卡住界面
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().set_title("选择项目工作目录").blocking_pick_folder();
+        match picked {
+            None => Ok(None),
+            Some(p) => p.into_path().map(|p| Some(p.to_string_lossy().into_owned())).map_err(|e| e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("内部错误: {e}"))?
 }
 
 /// 根据工作目录里的配置文件 / 文档，自动探测项目信息用于表单填充
