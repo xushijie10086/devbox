@@ -227,7 +227,8 @@ pub fn resolve_restore(state: State<AppState>) {
     sync_last_running(&state);
 }
 
-#[cfg(test)]
+// 这批测试起真正的 Unix 子进程（sleep / kill -0 / 脱离终端），只在 Unix 上跑
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::commands::process::{start_and_verify, start_and_verify_with};

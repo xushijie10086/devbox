@@ -14,6 +14,7 @@ export const api = {
   detectProject: (path) => invoke("detect_project", { path }),
   detectStartCommands: (path) => invoke("detect_start_commands", { path }),
   pickDirectory: () => invoke("pick_directory"),
+  getPlatform: () => invoke("get_platform"),
 
   // 进程 / 生命周期
   startProject: (id) => invoke("start_project", { id }),

@@ -2,6 +2,15 @@ use crate::models::ServiceInfo;
 use std::path::Path;
 use std::process::Command;
 
+/// 「服务」页依赖 Homebrew services，只有 macOS 支持；其它平台前端会隐藏这一页，这里是兜底
+fn require_supported() -> Result<(), String> {
+    if crate::platform::HAS_SERVICES {
+        Ok(())
+    } else {
+        Err("当前系统不支持「服务」（它依赖 macOS 的 Homebrew services）".into())
+    }
+}
+
 /// 定位 brew 可执行文件（兼容 Apple Silicon 与 Intel）
 fn brew_bin() -> Option<String> {
     for cand in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] {
@@ -16,6 +25,7 @@ fn brew_bin() -> Option<String> {
 /// 列出 brew 管理的服务
 #[tauri::command]
 pub fn list_services() -> Result<Vec<ServiceInfo>, String> {
+    require_supported()?;
     let brew = brew_bin().ok_or("未找到 Homebrew，请先安装 brew")?;
     let output = Command::new(&brew)
         .args(["services", "list"])
@@ -45,16 +55,19 @@ pub fn list_services() -> Result<Vec<ServiceInfo>, String> {
 
 #[tauri::command]
 pub fn start_service(name: String) -> Result<(), String> {
+    require_supported()?;
     run_brew_service("start", &name)
 }
 
 #[tauri::command]
 pub fn stop_service(name: String) -> Result<(), String> {
+    require_supported()?;
     run_brew_service("stop", &name)
 }
 
 #[tauri::command]
 pub fn restart_service(name: String) -> Result<(), String> {
+    require_supported()?;
     run_brew_service("restart", &name)
 }
 

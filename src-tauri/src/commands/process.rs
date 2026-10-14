@@ -169,10 +169,8 @@ pub(crate) fn shell_command(project: &Project, command: &str) -> Result<Command,
     }
     // 选定的 Node / JDK 版本：写成命令前缀，保证在登录 shell 重排 PATH 之后才生效
     let prelude = crate::commands::runtime::shell_prelude(project)?;
-    let mut cmd = Command::new("/bin/sh");
+    let mut cmd = crate::platform::shell(&format!("{prelude}{command}"));
     cmd.current_dir(&project.path)
-        .arg("-lc")
-        .arg(format!("{prelude}{command}"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -298,7 +296,7 @@ const START_GRACE: Duration = Duration::from_secs(2);
 const START_PORT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 启动项目并等待结果，让界面能明确告知 成功 / 失败 / 失败原因。
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn start_and_verify(id: &str, state: &AppState) -> Result<StartOutcome, String> {
     start_and_verify_with(id, state, START_GRACE, START_PORT_TIMEOUT)
 }
@@ -413,8 +411,7 @@ fn finish_exited(
         });
     }
 
-    use std::os::unix::process::ExitStatusExt;
-    let reason = describe_exit(status.code(), status.signal());
+    let reason = describe_exit(status.code(), crate::platform::exit_signal(&status));
     let tail = tail_since_start(&state.log_buffer(id), TAIL_LINES);
     push_system_log(state, id, &format!("✖ 启动失败：{reason}"));
     let mut msg = format!("启动失败：{reason}");
@@ -428,6 +425,7 @@ fn finish_exited(
 /// 把退出码 / 信号翻译成人话
 pub(crate) fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     match (code, signal) {
+        (Some(9009), _) => "命令未找到（退出码 9009），请检查启动命令，或该命令是否在 PATH 中".into(),
         (Some(127), _) => "命令未找到（退出码 127），请检查启动命令，或该命令是否在登录 shell 的 PATH 中".into(),
         (Some(126), _) => "命令无法执行，权限不足（退出码 126）".into(),
         (Some(n), _) => format!("进程异常退出（退出码 {n}）"),
@@ -490,10 +488,8 @@ pub fn stop_project_inner(id: &str, state: &AppState) -> Result<(), String> {
         // 停止命令（如 ./gradlew --stop）也要在同一套 Node / JDK 下执行
         let prelude = crate::commands::runtime::shell_prelude(&project).unwrap_or_default();
         if let Some(stop_cmd) = project.stop_command.clone().filter(|s| !s.trim().is_empty()) {
-            let _ = Command::new("/bin/sh")
+            let _ = crate::platform::shell(&format!("{prelude}{stop_cmd}"))
                 .current_dir(&project.path)
-                .arg("-lc")
-                .arg(format!("{prelude}{stop_cmd}"))
                 .status();
         }
     }
@@ -557,12 +553,11 @@ pub fn stop_all(state: &AppState) -> usize {
 
 /// 记录一次自行退出：写入项目日志，非 0 退出时再生成前端通知
 fn record_exit(state: &AppState, id: &str, status: std::process::ExitStatus) {
-    use std::os::unix::process::ExitStatusExt;
     if status.success() {
         push_system_log(state, id, "进程已退出（退出码 0）");
         return;
     }
-    let reason = describe_exit(status.code(), status.signal());
+    let reason = describe_exit(status.code(), crate::platform::exit_signal(&status));
     push_system_log(state, id, &format!("✖ 进程已退出：{reason}"));
 
     let tail = tail_since_start(&state.log_buffer(id), TAIL_LINES);
@@ -658,15 +653,31 @@ pub(crate) fn spawn_reader<R: Read + Send + 'static>(
     stream: &'static str,
     buf: LogBuffer,
 ) {
-    std::thread::spawn(move || {
-        let reader = BufReader::new(r);
-        for line in reader.lines() {
-            match line {
-                Ok(text) => push_log(&buf, stream, text),
-                Err(_) => break,
+    std::thread::spawn(move || for_each_line(r, |text| push_log(&buf, stream, text)));
+}
+
+/// 逐行读取子进程输出，按行回调。
+/// 不能用 `BufRead::lines()`：它遇到非 UTF-8 字节就返回错误，读取线程随之退出，
+/// 之后没人读管道，子进程写满管道就会卡死。这里按字节读，再用 `decode_line` 解码
+/// （合法 UTF-8 原样；否则按系统代码页，中文 Windows 上就是 GBK）。
+pub(crate) fn for_each_line<R: Read>(r: R, mut on_line: impl FnMut(String)) {
+    let mut reader = BufReader::new(r);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match reader.read_until(b'\n', &mut raw) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                if raw.last() == Some(&b'\n') {
+                    raw.pop();
+                    if raw.last() == Some(&b'\r') {
+                        raw.pop();
+                    }
+                }
+                on_line(crate::platform::decode_line(&raw));
             }
         }
-    });
+    }
 }
 
 pub(crate) fn push_log(buf: &LogBuffer, stream: &str, text: String) {
@@ -678,7 +689,8 @@ fn push_system_log(state: &AppState, id: &str, text: &str) {
     push_log(&buf, "system", text.to_string());
 }
 
-#[cfg(test)]
+// 这批测试起真正的 Unix 子进程（sleep / sh / 信号），只在 Unix 上跑；Windows 的对应测试见 windows_tests
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::models::Config;
@@ -883,17 +895,6 @@ mod tests {
         stop_all(&st);
     }
 
-    #[test]
-    fn noise_filter_keeps_the_real_error_line() {
-        assert!(is_noise(""));
-        assert!(is_noise("[ERROR] "));
-        assert!(is_noise("[INFO] ------------------------------------------------------------------------"));
-        assert!(is_noise("=========="));
-        assert!(!is_noise("[ERROR] No plugin found for prefix 'spring-boot' in the current project"));
-        assert!(!is_noise("[INFO] BUILD FAILURE"));
-        assert!(!is_noise("Error: Cannot find module 'express'"));
-        assert!(!is_noise("[1] something"), "方括号里不是日志级别时按正文处理");
-    }
 
     #[test]
     fn maven_style_failure_tail_contains_root_cause() {
@@ -994,13 +995,6 @@ mod tests {
         assert!(st.exit_events.lock().unwrap().is_empty(), "{:?}", st.exit_events.lock().unwrap());
     }
 
-    #[test]
-    fn describes_exit_reasons() {
-        assert!(describe_exit(Some(127), None).contains("命令未找到"));
-        assert!(describe_exit(Some(126), None).contains("权限"));
-        assert!(describe_exit(Some(3), None).contains("退出码 3"));
-        assert!(describe_exit(None, Some(9)).contains("信号 9"));
-    }
 
     #[test]
     fn crash_reports_reason_and_last_output() {
@@ -1047,5 +1041,203 @@ mod tests {
         let out = run(&crate::testutil::listen_command(31998), Some(31998), "/tmp").unwrap();
         assert_eq!(out.level, "success");
         assert!(out.message.contains("已就绪"), "{}", out.message);
+    }
+}
+
+/// 与平台无关的纯逻辑测试：Linux / macOS / Windows 都跑
+#[cfg(test)]
+mod pure_tests {
+    use super::*;
+
+    #[test]
+    fn noise_filter_keeps_the_real_error_line() {
+        assert!(is_noise(""));
+        assert!(is_noise("[ERROR] "));
+        assert!(is_noise("[INFO] ------------------------------------------------------------------------"));
+        assert!(is_noise("=========="));
+        assert!(!is_noise("[ERROR] No plugin found for prefix 'spring-boot' in the current project"));
+        assert!(!is_noise("[INFO] BUILD FAILURE"));
+        assert!(!is_noise("Error: Cannot find module 'express'"));
+        assert!(!is_noise("[1] something"), "方括号里不是日志级别时按正文处理");
+    }
+
+    #[test]
+    fn describes_exit_reasons() {
+        assert!(describe_exit(Some(127), None).contains("命令未找到"));
+        assert!(describe_exit(Some(126), None).contains("权限"));
+        assert!(describe_exit(Some(3), None).contains("退出码 3"));
+        assert!(describe_exit(None, Some(9)).contains("信号 9"));
+    }
+
+    #[test]
+    fn output_lines_are_split_on_lf_and_crlf_and_never_dropped() {
+        let mut got = Vec::new();
+        for_each_line("a\r\nb\n\nc".as_bytes(), |l| got.push(l));
+        assert_eq!(got, ["a", "b", "", "c"], "CRLF / LF 都去掉，空行保留，没有结尾换行的最后一行也要");
+
+        // 中间夹着非 UTF-8 字节：读取不能就此停下，后面的行照样读到
+        let mut bytes = b"first\n".to_vec();
+        bytes.extend_from_slice(&[b'b', b'a', b'd', 0xff, 0xfe, b'\n']);
+        bytes.extend_from_slice("后面的行\n".as_bytes());
+        let mut got = Vec::new();
+        for_each_line(&bytes[..], |l| got.push(l));
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert_eq!(got[0], "first");
+        assert!(got[1].starts_with("bad"), "{:?}", got[1]);
+        assert_eq!(got[2], "后面的行");
+    }
+
+    #[test]
+    fn windows_command_not_found_code_is_explained() {
+        assert!(describe_exit(Some(9009), None).contains("命令未找到"));
+    }
+}
+
+// Windows 上的对应测试：同样的流程（启动确认 / 崩溃原因 / 端口就绪 / 版本与环境变量 / 依赖 / 停止整棵进程树），
+// 命令换成 cmd 能跑的写法，输出用 ASCII（CI 机器的代码页不一定能表示中文）
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::models::Config;
+    use crate::testutil::{listen_command, sleep_command, workdir};
+
+    fn state_of(projects: serde_json::Value) -> AppState {
+        let list: Vec<Project> = serde_json::from_value(projects).unwrap();
+        AppState::for_test(Config { projects: list, ..Default::default() })
+    }
+
+    fn run(cmd: &str, port: Option<u16>, path: &str) -> Result<StartOutcome, String> {
+        let st = state_of(serde_json::json!([{
+            "id": "t", "name": "t", "path": path, "start_command": cmd, "port": port
+        }]));
+        let r = start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(5));
+        let _ = stop_project_inner("t", &st);
+        r
+    }
+
+    fn logs(st: &AppState, id: &str) -> String {
+        st.log_buffer(id).snapshot().into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
+    }
+
+    fn alive_any(pids: &[Pid]) -> bool {
+        let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
+        sys.refresh_processes();
+        pids.iter().any(|p| sys.process(*p).is_some())
+    }
+
+    #[test]
+    fn long_running_command_is_success_and_stop_ends_the_whole_tree() {
+        let st = state_of(serde_json::json!([{
+            "id": "t", "name": "t", "path": workdir(), "start_command": sleep_command(60)
+        }]));
+        let out = start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(1)).unwrap();
+        assert_eq!(out.level, "success", "{}", out.message);
+
+        // 进程树：cmd.exe → ping.exe，停止时两层都要结束
+        let root = st.procs.lock().unwrap().get("t").unwrap().pid;
+        let pids = {
+            let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
+            sys.refresh_processes();
+            collect_descendants(&sys, root)
+        };
+        assert!(pids.len() >= 2, "应该有 cmd 和它启动的 ping：{pids:?}");
+        assert!(running_ids(&st).contains(&"t".to_string()));
+
+        stop_project_inner("t", &st).unwrap();
+        for _ in 0..50 {
+            if !alive_any(&pids) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!alive_any(&pids), "停止后整棵进程树都应该没了：{pids:?}");
+        assert!(running_ids(&st).is_empty());
+    }
+
+    #[test]
+    fn crash_reports_reason_and_last_output() {
+        let err = run("echo disk-full 1>&2 & exit 3", None, &workdir()).unwrap_err();
+        assert!(err.contains("退出码 3"), "{err}");
+        assert!(err.contains("disk-full"), "{err}");
+    }
+
+    #[test]
+    fn unknown_command_fails_to_start_with_its_output() {
+        let err = run("definitely-not-a-command-xyz", None, &workdir()).unwrap_err();
+        assert!(err.contains("启动失败"), "{err}");
+    }
+
+    #[test]
+    fn one_shot_command_exit_zero_is_not_failure() {
+        let out = run("echo hi", None, &workdir()).unwrap();
+        assert_eq!(out.level, "success");
+        assert!(out.message.contains("退出码 0"), "{}", out.message);
+    }
+
+    #[test]
+    fn missing_workdir_is_reported() {
+        let err = run("echo hi", None, "C:\\no\\such\\dir").unwrap_err();
+        assert!(err.contains("工作目录不存在"), "{err}");
+    }
+
+    #[test]
+    fn port_ready_is_success_and_never_listening_is_warning() {
+        let out = run(&listen_command(31998), Some(31998), &workdir()).unwrap();
+        assert_eq!(out.level, "success", "{}", out.message);
+        assert!(out.message.contains("已就绪"), "{}", out.message);
+
+        let out = run(&sleep_command(10), Some(31999), &workdir()).unwrap();
+        assert_eq!(out.level, "warning");
+        assert!(out.message.contains("31999"), "{}", out.message);
+    }
+
+    #[test]
+    fn selected_node_is_used_and_project_env_reaches_the_process() {
+        // 造一个假的 node.exe（拷一份 whoami.exe），验证选定版本的目录被放到 PATH 最前
+        let d = std::env::temp_dir().join(format!("devbox-win-node-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let sys32 = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
+        std::fs::copy(sys32.join("whoami.exe"), d.join("node.exe")).unwrap();
+
+        let st = state_of(serde_json::json!([{
+            "id": "t", "name": "t", "path": workdir(), "start_command": "where node && echo flag=%MY_FLAG%",
+            "env": {"MY_FLAG": "xyz"},
+            "node": {"version": "99.0.0", "path": d.to_string_lossy()},
+        }]));
+        // 命令打印完就退出，不是常驻进程，级别不会是 success；这里只关心输出内容
+        let out = start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(3)).unwrap();
+        assert!(out.message.contains("退出码 0"), "{}", out.message);
+        let all = logs(&st, "t");
+        // where 会列出 PATH 里所有 node.exe，选定版本的必须排在第一个
+        let first = all.lines().find(|l| l.to_lowercase().ends_with("node.exe")).unwrap_or("");
+        // temp_dir() 给的是 8.3 短路径（RUNNER~1），where 打印长路径，只比较目录名之后的部分
+        let tail = format!("{}\\node.exe", d.file_name().unwrap().to_string_lossy()).to_lowercase();
+        assert!(first.to_lowercase().ends_with(&tail), "{all}");
+        assert!(all.contains("flag=xyz"), "{all}");
+        assert!(all.contains("使用指定版本: Node 99.0.0"), "{all}");
+    }
+
+    #[test]
+    fn missing_selected_runtime_blocks_start_with_clear_message() {
+        let st = state_of(serde_json::json!([{
+            "id": "t", "name": "t", "path": workdir(), "start_command": "echo hi",
+            "node": {"version": "16.0.0", "path": "C:\\no\\such\\node"},
+        }]));
+        let err = start_and_verify_with("t", &st, Duration::from_millis(500), Duration::from_secs(1)).unwrap_err();
+        assert!(err.contains("Node 16.0.0") && err.contains("已不存在"), "{err}");
+    }
+
+    #[test]
+    fn dependency_is_started_first_and_noted() {
+        let st = state_of(serde_json::json!([
+            {"id": "a", "name": "DB", "path": workdir(), "start_command": sleep_command(30)},
+            {"id": "b", "name": "API", "path": workdir(), "start_command": sleep_command(30), "depends_on": ["a"]},
+        ]));
+        let out = start_with_deps_with("b", &st, Duration::from_millis(800), Duration::from_secs(3)).unwrap();
+        assert!(out.message.contains("已先启动依赖：DB"), "{}", out.message);
+        assert_eq!(running_ids(&st).len(), 2);
+        stop_all(&st);
+        assert!(running_ids(&st).is_empty());
     }
 }

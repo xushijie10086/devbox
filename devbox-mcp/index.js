@@ -1,23 +1,18 @@
 #!/usr/bin/env node
 // DevBox MCP 适配器（stdio）
 //
-// 读取 DevBox 写在 ~/Library/Application Support/devbox/bridge.json 里的端口与 token，
+// 读取 DevBox 写在配置目录下 devbox/bridge.json 里的端口与 token
+// （macOS: ~/Library/Application Support，Windows: %APPDATA%，Linux: $XDG_CONFIG_HOME 或 ~/.config），
 // 把本地 HTTP 桥接服务转发成一组 MCP 工具。DevBox 必须处于运行状态。
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "./paths.js";
 
-const BRIDGE_FILE = join(
-  homedir(),
-  "Library",
-  "Application Support",
-  "devbox",
-  "bridge.json"
-);
+const BRIDGE_FILE = join(configDir(), "devbox", "bridge.json");
 
 function readBridge() {
   try {

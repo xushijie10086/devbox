@@ -1,49 +1,27 @@
-use std::process::Command;
+//! 「打开……」类的快捷操作。各平台的具体做法在 `platform` 里，这里只负责参数整理。
 
 /// 用编辑器打开项目目录（默认 VSCode: `code`）
 #[tauri::command]
 pub fn open_in_editor(path: String, editor: Option<String>) -> Result<(), String> {
     let editor = editor.filter(|e| !e.trim().is_empty()).unwrap_or_else(|| "code".into());
-    // 走登录 shell，确保能取到 code / cursor / idea 等命令的 PATH
-    let cmd = format!("{editor} '{path}'");
-    Command::new("/bin/sh")
-        .arg("-lc")
-        .arg(&cmd)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开编辑器失败: {e}"))
+    crate::platform::open_in_editor(&editor, &path)
 }
 
 /// 在默认浏览器打开地址
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
-    Command::new("open")
-        .arg(&url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开浏览器失败: {e}"))
+    crate::platform::open_url(&url)
 }
 
-/// 在终端(Terminal.app)中打开目录
+/// 在终端中打开目录
 #[tauri::command]
 pub fn open_terminal(path: String) -> Result<(), String> {
-    Command::new("open")
-        .args(["-a", "Terminal"])
-        .arg(&path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开终端失败: {e}"))
+    crate::platform::open_terminal(&path)
 }
 
-/// 在访达中显示：目录就打开它；文件则定位并选中该文件（open -R），而不是用默认应用把它打开
+/// 在文件管理器（访达 / 资源管理器 / Files）中显示：目录就打开它；文件则尽量定位并选中该文件。
+/// 命令名沿用 reveal_in_finder，前端无需改动。
 #[tauri::command]
 pub fn reveal_in_finder(path: String) -> Result<(), String> {
-    let mut cmd = Command::new("open");
-    if std::path::Path::new(&path).is_file() {
-        cmd.arg("-R");
-    }
-    cmd.arg(&path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开访达失败: {e}"))
+    crate::platform::reveal(&path)
 }

@@ -43,7 +43,7 @@ struct GitOut {
     stderr: String,
 }
 
-/// 通过登录 shell 运行 git（保证能找到 Homebrew 装的 git），并避免交互式提示卡住：
+/// 通过登录 shell 运行 git（Unix 上保证能找到 Homebrew 装的 git；Windows 没有登录 shell，直接运行），并避免交互式提示卡住：
 /// 不弹终端口令提示、ssh 不询问；LC_ALL=C 让报错是英文，便于识别原因。
 fn run_git(dir: &str, args: &[&str], timeout: Duration) -> Result<GitOut, String> {
     run_git_with(dir, args, timeout, true)
@@ -51,20 +51,29 @@ fn run_git(dir: &str, args: &[&str], timeout: Duration) -> Result<GitOut, String
 
 /// login 为 false 时直接执行 git，不经过登录 shell：后台轮询状态用，省掉加载用户 profile 的开销
 fn run_git_with(dir: &str, args: &[&str], timeout: Duration, login: bool) -> Result<GitOut, String> {
-    let mut cmd = if login {
+    let mut cmd = if login && cfg!(unix) {
         let mut c = Command::new("/bin/sh");
         c.args(["-lc", "exec git \"$@\"", "sh"]);
         c
     } else {
-        // GUI 应用的 PATH 很短，补上 Homebrew 的常见位置
         let mut c = Command::new("git");
-        let path = std::env::var("PATH").unwrap_or_default();
-        c.env("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{path}"))
-            // 只读查询不去刷新 / 锁定索引，免得和用户自己的 git 操作抢锁。
-            // 只设在这个子进程上，不污染本进程（以及之后启动的项目）的环境
-            .env("GIT_OPTIONAL_LOCKS", "0");
+        // GUI 应用的 PATH 很短，补上 Homebrew 的常见位置（Windows 的 PATH 用分号分隔，不能这么拼）
+        #[cfg(unix)]
+        {
+            let path = std::env::var("PATH").unwrap_or_default();
+            c.env("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{path}"));
+        }
+        // 只读查询不去刷新 / 锁定索引，免得和用户自己的 git 操作抢锁。
+        // 只设在这个子进程上，不污染本进程（以及之后启动的项目）的环境
+        c.env("GIT_OPTIONAL_LOCKS", "0");
         c
     };
+    // Windows 上从没有控制台的 GUI 程序里起 git，不加这个会闪出黑窗
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
     cmd.args(args)
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
