@@ -1211,7 +1211,9 @@ mod windows_tests {
         let all = logs(&st, "t");
         // where 会列出 PATH 里所有 node.exe，选定版本的必须排在第一个
         let first = all.lines().find(|l| l.to_lowercase().ends_with("node.exe")).unwrap_or("");
-        assert_eq!(first.to_lowercase(), d.join("node.exe").to_string_lossy().to_lowercase(), "{all}");
+        // temp_dir() 给的是 8.3 短路径（RUNNER~1），where 打印长路径，只比较目录名之后的部分
+        let tail = format!("{}\\node.exe", d.file_name().unwrap().to_string_lossy()).to_lowercase();
+        assert!(first.to_lowercase().ends_with(&tail), "{all}");
         assert!(all.to_lowercase().contains(&d.join("node.exe").to_string_lossy().to_lowercase()), "{all}");
         assert!(all.contains("flag=xyz"), "{all}");
         assert!(all.contains("使用指定版本: Node 99.0.0"), "{all}");

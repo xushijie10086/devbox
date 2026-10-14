@@ -355,7 +355,9 @@ mod tests {
     #[test]
     fn clicking_a_broken_project_reports_the_reason() {
         let mut c = cfg(&[], &[("a", "坏项目", None)]);
-        c.projects[0].start_command = "echo 'Error: db down' >&2; exit 3".into();
+        // cmd 里分号不是命令分隔符，Windows 用 & 和 1>&2
+        c.projects[0].start_command =
+            if cfg!(windows) { "echo Error: db down 1>&2 & exit 3" } else { "echo 'Error: db down' >&2; exit 3" }.into();
         let st = AppState::for_test(c);
         let (title, body) = toggle_project(&st, "a");
         assert_eq!(title, "「坏项目」启动失败");
