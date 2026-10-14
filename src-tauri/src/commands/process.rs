@@ -1214,7 +1214,6 @@ mod windows_tests {
         // temp_dir() 给的是 8.3 短路径（RUNNER~1），where 打印长路径，只比较目录名之后的部分
         let tail = format!("{}\\node.exe", d.file_name().unwrap().to_string_lossy()).to_lowercase();
         assert!(first.to_lowercase().ends_with(&tail), "{all}");
-        assert!(all.to_lowercase().contains(&d.join("node.exe").to_string_lossy().to_lowercase()), "{all}");
         assert!(all.contains("flag=xyz"), "{all}");
         assert!(all.contains("使用指定版本: Node 99.0.0"), "{all}");
     }
