@@ -70,7 +70,7 @@ pub fn detect_start_commands(path: String) -> Result<Vec<StartCandidate>, String
 
 // ---------------------------------------------------------------- Node
 
-fn package_manager(dir: &Path) -> &'static str {
+pub(crate) fn package_manager(dir: &Path) -> &'static str {
     if dir.join("pnpm-lock.yaml").exists() {
         "pnpm"
     } else if dir.join("yarn.lock").exists() {
@@ -79,6 +79,14 @@ fn package_manager(dir: &Path) -> &'static str {
         "bun"
     } else {
         "npm"
+    }
+}
+
+/// 用包管理器运行 package.json 里的某个脚本：npm / bun 要写 run，pnpm / yarn 可以省略
+pub(crate) fn script_command(pm: &str, script: &str) -> String {
+    match pm {
+        "npm" | "bun" => format!("{pm} run {script}"),
+        _ => format!("{pm} {script}"),
     }
 }
 
@@ -93,10 +101,7 @@ fn node(dir: &Path, out: &mut Vec<StartCandidate>) {
         return;
     };
     let pm = package_manager(dir);
-    let run = |s: &str| match pm {
-        "npm" | "bun" => format!("{pm} run {s}"),
-        _ => format!("{pm} {s}"),
-    };
+    let run = |s: &str| script_command(pm, s);
     let no_modules = !dir.join("node_modules").exists();
     let warn = "尚未安装依赖（没有 node_modules），请先安装";
     let join = |body: Option<String>| -> Option<String> {

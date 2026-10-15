@@ -1,3 +1,4 @@
+pub mod envs;
 pub mod git;
 pub mod hosts;
 pub mod lifecycle;

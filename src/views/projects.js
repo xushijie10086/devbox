@@ -3,6 +3,7 @@ import { el, toast, guard, fmtUptime, confirmDialog, choiceDialog, summarizeStar
 import { icon } from "../icons.js";
 import { createLogView } from "../logview.js";
 import { fileManagerName, runtimeSources } from "../platform.js";
+import { envChipView, envSwitchNotice } from "../envs.js";
 
 // 固定 tab 的内部标识；真实项目组用它自己的名字，保留名在后端已禁止使用
 const TAB_ALL = "__all__";
@@ -28,6 +29,7 @@ export function mount(root) {
   const pulling = new Set(); // 正在拉取代码的项目 id
   let branches = {}; // 项目 id -> { name, detached }，只含 git 项目
   let gitStatus = {}; // 项目 id -> { ahead, behind, dirty, has_upstream }（后台每 20 秒刷新）
+  let envInfo = {}; // 项目 id -> { active, profiles, default, notes }：项目里识别出的环境（dev / test / prod …）
 
   const tabsEl = el("div", { class: "tabs" });
   const groupTools = el("div", { class: "group-tools" });
@@ -374,7 +376,7 @@ export function mount(root) {
 
   async function refresh() {
     [projects, groups] = await Promise.all([api.listProjects(), api.listProjectGroups()]);
-    await refreshBranches();
+    await Promise.all([refreshBranches(), refreshEnvs()]);
     try {
       const arr = await api.projectStatuses();
       statuses = Object.fromEntries(arr.map((s) => [s.id, s]));
@@ -383,6 +385,15 @@ export function mount(root) {
     }
     renderTabs();
     render();
+  }
+
+  // 环境文件很少变，只在重新载入项目列表时读一次（不放进每秒的状态轮询）
+  async function refreshEnvs() {
+    try {
+      envInfo = Object.fromEntries((await api.projectEnvs()).map((e) => [e.id, e]));
+    } catch (_) {
+      envInfo = {};
+    }
   }
 
   // 取走后端记录的「进程自己退出」通知并弹出（多个项目同时退出时合并成一条）
@@ -432,8 +443,8 @@ export function mount(root) {
     // 「全部」tab 里额外标出所属分组，方便辨认
     const groupBadge = activeTab === TAB_ALL && p.group ? el("span", { class: "badge badge-group", title: "所属项目组" }, `# ${p.group}`) : null;
 
-    // 第三行标签：当前分支 + Node / JDK 版本，都可点击切换
-    const chips = [branchChip(p), jobChip(p, st), depChip(p), ...runtimeChips(p)].filter(Boolean);
+    // 第三行标签：当前分支 + 环境 + Node / JDK 版本，都可点击切换
+    const chips = [branchChip(p), jobChip(p, st), depChip(p), envChip(p), ...runtimeChips(p)].filter(Boolean);
 
     const nameCell = el("div", { class: "name-cell" }, [
       el("div", { class: "name-line" }, [dot, el("span", { class: "row-title", title: p.name }, p.name), kindBadge]),
@@ -755,6 +766,70 @@ export function mount(root) {
       return true;
     }, "切换");
     setTimeout(() => search.focus(), 0);
+  }
+
+  // 环境标签：项目里识别到 dev / test / prod 等环境时显示，点击切换；没识别到就不显示
+  function envChip(p) {
+    const v = envChipView(envInfo[p.id]);
+    if (!v) return null;
+    return el("button", { class: `rt-chip env-chip ${v.cls}`.trim(), title: v.title, onclick: () => openEnvDialog(p) }, v.text);
+  }
+
+  // 切换项目环境：列出项目里自动读到的环境，选中后启动时生效（不改项目里的任何文件）
+  async function openEnvDialog(p) {
+    let scan;
+    try {
+      scan = await api.detectEnvironments(p.path, p.start_command);
+    } catch (e) {
+      toast(`读取环境失败：${String(e)}`, "error");
+      return;
+    }
+    let selected = p.active_env || "";
+    const options = [{
+      value: "",
+      title: "默认（不指定）",
+      desc: scan.default ? `按项目原本的设置运行（项目文件里默认的环境：${scan.default}）` : "按项目原本的设置运行，不注入任何环境",
+      source: "",
+    }];
+    for (const e of scan.profiles) options.push({ value: e.name, title: e.name, desc: e.summary, source: e.source });
+    if (selected && !scan.profiles.some((e) => e.name === selected)) {
+      options.push({
+        value: selected,
+        title: `⚠ ${selected}`,
+        desc: "项目里已经找不到这个环境（文件被删除或切换了分支），启动会被拒绝；请改选别的环境",
+        source: "",
+      });
+    }
+    const list = el("div", { class: "env-list" });
+    for (const o of options) {
+      const radio = el("input", { type: "radio", name: "env", value: o.value, checked: o.value === selected ? "checked" : false });
+      radio.onchange = () => { selected = o.value; };
+      list.append(el("label", { class: "env-option" }, [
+        radio,
+        el("div", { class: "env-text" }, [
+          el("div", { class: "env-title" }, [o.title, o.source ? el("span", { class: "env-source" }, o.source) : null]),
+          el("div", { class: "env-desc" }, o.desc),
+        ]),
+      ]));
+    }
+    const body = el("div", { class: "form" }, [
+      el("div", { class: "note" }, `选定后，启动「${p.name}」时按该环境运行；只在启动时生效，不会修改项目里的任何文件，也不影响「运行脚本」。`),
+      list,
+      ...scan.notes.map((n) => el("div", { class: "note env-note" }, `⚠ ${n}`)),
+    ]);
+    showModal(`切换环境 · ${p.name}`, body, async () => {
+      let message;
+      try {
+        message = await api.setProjectEnv(p.id, selected || null);
+      } catch (e) {
+        toast(String(e), "error");
+        return false;
+      }
+      const n = envSwitchNotice(message, statuses[p.id]?.running);
+      toast(n.text, n.level);
+      await refresh();
+      return true;
+    });
   }
 
   // 运行时版本标签：前端项目显示 Node、后端项目显示 JDK；「其它」类型只在设置过时显示。点击可切换。
@@ -1174,6 +1249,8 @@ export function mount(root) {
         editor: get("editor") || null,
         auto_restart: autoRestart.checked,
         env,
+        // 编辑表单里没有这一项，保留原来选的环境（在列表上的「环境」标签里切换）
+        active_env: data.active_env || null,
       };
       if (!project.name || !project.path || !project.start_command) {
         toast("名称、工作目录、启动命令为必填", "error");
