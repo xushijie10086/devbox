@@ -146,6 +146,29 @@ tccutil reset SystemPolicyDocumentsFolder dev.devbox.app
 - 自签名证书只对你自己的 Mac 有效；要给别人用，需要 Apple 开发者账号做 Developer ID 签名和公证。
 - 最省事的办法其实是把项目放到不受保护的目录（如 `~/code`），那样根本不会弹。
 
+## 发布包也固定签名（让所有用户升级后不再弹框）
+
+上一节解决的是你自己机器上的弹窗。给别人用的 GitHub Release，也要**每个版本都用同一张证书签名**，用户才只在第一次弹一次，之后升级不再弹。做法是把你本机那张证书导出，放进仓库的 Secrets，发布时由 CI 签名（`scripts/import-signing-cert.sh`）。
+
+**1. 导出证书**（只需要一次）：打开「钥匙串访问」→ 左侧选「登录」→ 上方选「我的证书」→ 找到 `DevBox Local Signing`（展开能看到下面有私钥）→ 右键「导出…」→ 格式选 `.p12` → 设一个密码（记住它）。只导出这一张，不要用「导出全部」。
+
+**2. 放进仓库 Secrets**：GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret，添加两个：
+
+| 名称 | 内容 |
+|---|---|
+| `SIGNING_CERT_P12` | `.p12` 文件的 base64：终端执行 `base64 -i DevBox-signing.p12 \| pbcopy`，粘贴 |
+| `SIGNING_CERT_PASSWORD` | 第 1 步设的密码 |
+
+装了 [gh](https://cli.github.com) 的话也可以：`gh secret set SIGNING_CERT_P12 < <(base64 -i DevBox-signing.p12)` 和 `gh secret set SIGNING_CERT_PASSWORD`。
+
+**3. 保管好 `.p12` 和密码**。证书丢了或换了，签名身份就变了，所有用户升级时会再弹一次。
+
+配好之后，打标签发布时 macOS 包自动用这张证书签名，并检查签名里是 `certificate leaf`（固定身份）而不是 `cdhash`（临时签名，每次不同），不满足就让发布失败。**打标签时如果没配 Secrets，发布会直接失败**，而不是悄悄发出一个每次升级都弹框的包；配好后在 Actions 里重新运行那次发布即可，不需要重打标签。
+
+本机打的包和 CI 打的包用的是同一张证书，所以身份一致，你自己装官方包也不会多弹一次。
+
+**局限**：自签名证书在别人的 Mac 上不被系统信任，所以**首次打开仍会提示「无法验证开发者」**（右键 → 打开，或 `xattr -cr /Applications/DevBox.app`）；这是自签名和 Apple 开发者证书（99 美元/年，签名 + 公证）的区别。想彻底消除这个提示，需要后者。
+
 ## 依赖版本约定
 
 Rust 的 `tauri` crate 与前端的 `@tauri-apps/api`、`@tauri-apps/cli` 必须是同一个「主.次」版本，否则 `tauri dev` 启动会报 `version mismatched Tauri packages`。两边都用 `~2.12` 锁定了次版本；要升级时一起改（`cargo update -p tauri` 同时 `npm install @tauri-apps/api@~X.Y @tauri-apps/cli@~X.Y`），`npm test` 会在漂移时直接报错并给出修复命令。
