@@ -36,6 +36,8 @@ fi
 kc="${RUNNER_TEMP:-$tmp}/devbox-release.keychain-db"
 pw=$(uuidgen)
 echo "::add-mask::${pw}"
+# 同名钥匙串已存在（同一台机器上重复运行）时先删掉，免得 create-keychain 报「已存在」
+security delete-keychain "$kc" >/dev/null 2>&1 || true
 security create-keychain -p "$pw" "$kc"
 security set-keychain-settings -lut 21600 "$kc"
 security unlock-keychain -p "$pw" "$kc"
