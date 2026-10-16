@@ -23,6 +23,13 @@ export const api = {
   projectStatuses: () => invoke("project_statuses"),
   healthTick: () => invoke("health_tick"),
 
+  // MCP（对 AI agent 开放的服务）
+  mcpInfo: () => invoke("mcp_info"),
+  mcpSetSettings: (enabled, mode) => invoke("mcp_set_settings", { enabled, mode }),
+  mcpResetToken: () => invoke("mcp_reset_token"),
+  mcpActivity: () => invoke("mcp_activity"),
+  mcpClearActivity: () => invoke("mcp_clear_activity"),
+
   // 系统通知开关
   getNotificationsEnabled: () => invoke("get_notifications_enabled"),
   setNotificationsEnabled: (enabled) => invoke("set_notifications_enabled", { enabled }),

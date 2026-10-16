@@ -20,7 +20,7 @@ env:
   RUST_TOOLCHAIN: 1.97.0
 
 jobs:
-  # 前端：纯逻辑测试（含 Rust / npm 的 Tauri 版本一致性检查）、构建、MCP 适配器语法
+  # 前端：纯逻辑测试（含 Rust / npm 的 Tauri 版本一致性检查、MCP 转发器端到端测试）、构建、MCP 转发器语法
   frontend:
     name: 前端测试与构建
     runs-on: ubuntu-latest
@@ -30,19 +30,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            devbox-mcp/package-lock.json
       - run: npm ci
       - name: 测试
         run: npm test
       - name: 构建
         run: npm run build
-      - name: MCP 适配器
+      - name: MCP 转发器语法与自检
         working-directory: devbox-mcp
         run: |
-          npm ci
           node --check index.js
+          node --check proxy.js
+          node index.js --help > /dev/null
 
   # Rust：clippy（警告即失败）+ 单元测试，macOS / Linux / Windows 三个平台各跑一遍。
   rust:

@@ -592,13 +592,21 @@ fn record_exit(state: &AppState, id: &str, status: std::process::ExitStatus) {
     // 窗口不在前台时，用系统通知告诉用户项目崩了
     let (title, body) = crate::notify::crash_text(&name, &reason, &tail);
     crate::notify::notify(state, &title, &body, false);
-    let mut events = state.exit_events.lock().unwrap();
-    events.push(ExitEvent {
+    let event = ExitEvent {
         id: id.to_string(),
         name,
         ts: chrono::Local::now().format("%H:%M:%S").to_string(),
         message,
-    });
+    };
+    {
+        let mut history = state.exit_history.lock().unwrap();
+        history.push(event.clone());
+        if history.len() > 50 {
+            history.remove(0);
+        }
+    }
+    let mut events = state.exit_events.lock().unwrap();
+    events.push(event);
     if events.len() > 50 {
         events.remove(0); // 前端长时间没来取时，只保留最近的
     }

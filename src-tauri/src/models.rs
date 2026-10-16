@@ -88,6 +88,42 @@ pub struct Config {
     /// 关闭系统通知（默认开启，所以字段取反，缺省即开启）
     #[serde(default)]
     pub mute_notifications: bool,
+    /// 对 AI agent 开放的 MCP 服务设置
+    #[serde(default)]
+    pub mcp: McpSettings,
+}
+
+/// MCP 权限档位：服务端按档位决定 agent 能调用哪些工具（越权的调用会被直接拒绝）
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpMode {
+    /// 只读：看状态、日志、端口、git 信息等，不改变任何东西
+    Readonly,
+    /// 标准：在只读之上，可启停项目 / 服务、跑脚本、清日志、切环境、git fetch
+    #[default]
+    Standard,
+    /// 完全：再加上结束任意端口进程、改 hosts、增删改项目、git pull / 切分支
+    Full,
+}
+
+/// 对 AI agent 开放的 MCP 服务设置
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct McpSettings {
+    /// 总开关；关闭后 /mcp 一律拒绝（服务本身仍在，开关即时生效）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: McpMode,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        McpSettings { enabled: true, mode: McpMode::Standard }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 自动探测到的项目信息（用于表单一键填充）

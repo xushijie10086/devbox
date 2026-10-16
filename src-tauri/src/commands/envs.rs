@@ -106,6 +106,10 @@ pub fn detect_environments(path: String, start_command: Option<String>) -> Resul
 /// 所有项目的环境信息（列表上的「环境」标签用）
 #[tauri::command(async)]
 pub fn project_envs(state: State<AppState>) -> Vec<ProjectEnvs> {
+    project_envs_inner(&state)
+}
+
+pub fn project_envs_inner(state: &AppState) -> Vec<ProjectEnvs> {
     let projects = state.config.lock().unwrap().projects.clone();
     projects
         .into_iter()
@@ -116,6 +120,10 @@ pub fn project_envs(state: State<AppState>) -> Vec<ProjectEnvs> {
 /// 切换项目的环境；env 为 None 表示回到默认。正在运行的项目需要重启才会生效（由前端提示）。
 #[tauri::command(async)]
 pub fn set_project_env(id: String, env: Option<String>, state: State<AppState>) -> Result<String, String> {
+    set_project_env_inner(&id, env, &state)
+}
+
+pub fn set_project_env_inner(id: &str, env: Option<String>, state: &AppState) -> Result<String, String> {
     let env = env.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
     let project = state
         .config

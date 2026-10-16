@@ -38,3 +38,6 @@ windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 [features]
 # 默认无额外特性
 default = []
+
+[dev-dependencies]
+tauri = { version = "~2.12", features = ["test"] }

@@ -140,7 +140,11 @@ pub fn detect_scripts(dir: &Path) -> Vec<ScriptEntry> {
 /// 列出某个项目可运行的脚本
 #[tauri::command]
 pub fn list_scripts(id: String, state: State<AppState>) -> Result<Vec<ScriptEntry>, String> {
-    let project = get_project(&state, &id).ok_or("找不到项目")?;
+    list_scripts_inner(&id, &state)
+}
+
+pub fn list_scripts_inner(id: &str, state: &AppState) -> Result<Vec<ScriptEntry>, String> {
+    let project = get_project(state, id).ok_or("找不到项目")?;
     if !Path::new(&project.path).is_dir() {
         return Err(format!("工作目录不存在或不是目录：{}", project.path));
     }

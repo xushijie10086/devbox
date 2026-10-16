@@ -1,7 +1,7 @@
 {
   "name": "devbox-mcp",
-  "version": "1.0.0",
-  "description": "DevBox 的 MCP 适配器：把本地 HTTP 桥接服务暴露成 MCP 工具，供 claude code / Hermes 等 agent 启停项目、查看状态与日志、管理端口 / hosts / brew 服务。",
+  "version": "2.0.0",
+  "description": "DevBox 的 MCP stdio 转发器：把只支持 stdio 的 AI 客户端接到 DevBox 内置的 MCP 服务（Streamable HTTP）。零依赖。",
   "type": "module",
   "bin": {
     "devbox-mcp": "index.js"
@@ -9,10 +9,6 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "zod": "^3.23.8"
   },
   "engines": {
     "node": ">=18"

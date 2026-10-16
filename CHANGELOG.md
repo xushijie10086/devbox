@@ -2,8 +2,22 @@
 
 ## 未发布
 
+### 新增
+- **MCP 全面升级，AI agent 能更好地连接并操作 DevBox**：DevBox 自己就是一个标准的 MCP 服务（Streamable HTTP，`POST /mcp`，只监听本机），Claude Code、Cursor、Cline 等直接填地址和 token 即可连接，不再需要先装一个 Node 适配器
+  - **40 个工具**（原来 16 个）：总览、项目详情、**日志**（去颜色；按级别 / 关键词 / 上下文 / 输出流过滤；`since_seq` 增量拉取；`devbox_wait_for_log` 等到「启动完成」或「出现报错」）、**启停**（单个 / 整组 / 全部，按依赖顺序，失败带原因；已在运行的不重复启动）、最近崩溃、环境查看与切换、脚本（只能运行项目里识别出的脚本）与取消、git 状态 / 分支 / fetch / pull / 切分支、端口占用检查、Node / JDK 版本、hosts 增量编辑、新增 / 修改 / 删除项目
+  - **资源与提示词**：`devbox://overview`、`devbox://logs/{项目}` 等资源；`diagnose_project`（排查）、`start_dev_stack`（拉起环境）、`free_port`、`health_check` 提示词；初始化时附带使用建议，agent 一上来就知道该怎么用
+  - **三档权限**（只读 / 标准 / 完全，默认标准）：由服务端强制执行，超出档位的工具不出现在列表里、直接调用也会被拒绝；每个工具带 `readOnlyHint` / `destructiveHint` 等标注；可随时关闭整个 MCP 服务
+  - **新增「MCP」页面**：开关、权限档位、地址与 token（可复制 / 重置）、各客户端可直接复制的接入配置、全部工具列表、agent 的调用记录（含被拒绝的）
+  - **安全**：每个请求都要带 token（常量时间比较，持久化在配置目录，Unix 上权限 0600，重启不变）；校验 `Host` / `Origin` 防 DNS 重绑定；请求体大小与并发数限制；项目环境变量的值不会返回给 agent；hosts 的 ip / 域名写入前校验
+- `devbox-mcp/index.js` 重写为**零依赖**的 stdio 转发器（只给「只支持 stdio」的客户端用）：不再依赖 `@modelcontextprotocol/sdk` 和 `zod`，不用 `npm install`；每次请求重读连接信息，DevBox 重启、token 重置后不用改配置；新增 `--check` 自检
+
 ### 变更
 - **新应用图标**：等距立方体 + 绕着棱角排列的终端提示符 `>_`（`>` 在左面、`_` 在右面），深蓝渐变底板，按 macOS 规范留出边距，不再铺满整个画布。小到 32 像素也认得出立方体轮廓。源文件 `app-icon.svg`，macOS `.icns`、Windows `.ico`、各尺寸 PNG 都已重新生成
+- **MCP 默认权限档位为「标准」**：原来所有工具无差别开放，现在结束任意端口进程（`devbox_kill_port`）、改 hosts、增删改项目、git pull / 切分支需要在「MCP」页面把档位调到「完全」
+- 旧的本地 HTTP 接口（`/projects/list`、`/ports/kill` 等）已移除，统一走 `/mcp`；`devbox_start_project` 等工具的参数 `id` / `name` 合并为 `project`（旧参数名仍可用）
+
+### 修复
+- 修复发布时导入签名证书失败：不再用 macOS 自带的 openssl 解析钥匙串导出的 `.p12`（它读不出这种加密方式，会导致取出的证书是空的），改为全部交给 `security` 命令导入和取证书
 
 ## 1.4.0 · 2026-10-16
 

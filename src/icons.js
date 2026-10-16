@@ -20,6 +20,9 @@ const PATHS = {
   // 导航 / 卡片：日志（终端）
   logs:
     '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
+  // 导航：MCP（三个互联的节点）
+  mcp:
+    '<circle cx="12" cy="5.5" r="2.3"/><circle cx="5.5" cy="18" r="2.3"/><circle cx="18.5" cy="18" r="2.3"/><path d="M11 7.7 6.6 15.9M13 7.7l4.4 8.2M8 18h8"/>',
   // 卡片：在编辑器打开（代码括号）
   code:
     '<path d="M8 7l-4 5 4 5M16 7l4 5-4 5M13.5 5l-3 14"/>',

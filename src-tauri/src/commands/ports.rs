@@ -15,9 +15,13 @@ pub fn list_ports() -> Result<Vec<PortInfo>, String> {
 /// 相关的判定：监听进程属于某个运行中项目的进程树，或端口等于项目登记的期望端口。
 #[tauri::command]
 pub fn list_project_ports(state: State<AppState>) -> Result<Vec<PortInfo>, String> {
+    list_project_ports_inner(&state)
+}
+
+pub fn list_project_ports_inner(state: &AppState) -> Result<Vec<PortInfo>, String> {
     let ports = list_ports()?;
     let projects = state.config.lock().unwrap().projects.clone();
-    let trees = running_trees(&state);
+    let trees = running_trees(state);
 
     Ok(attribute_ports(ports, &projects, &trees))
 }
@@ -97,6 +101,10 @@ pub fn who_holds(state: &AppState, port: u16) -> Vec<PortHolder> {
 /// 启动前的端口预检：项目登记了端口、且已被占用时，说明是谁占的，让界面给出「结束占用并启动」
 #[tauri::command(async)]
 pub fn check_project_port(id: String, state: State<AppState>) -> Result<PortCheck, String> {
+    check_project_port_inner(&id, &state)
+}
+
+pub fn check_project_port_inner(id: &str, state: &AppState) -> Result<PortCheck, String> {
     let project = state
         .config
         .lock()
@@ -112,7 +120,7 @@ pub fn check_project_port(id: String, state: State<AppState>) -> Result<PortChec
     // 读取端口失败要让调用方知道（界面会忽略并照常启动），不能当成「端口空闲」
     let all = list_ports()?;
     let projects = state.config.lock().unwrap().projects.clone();
-    Ok(PortCheck { port: Some(port), holders: holders_of(port, all, &projects, &running_trees(&state)) })
+    Ok(PortCheck { port: Some(port), holders: holders_of(port, all, &projects, &running_trees(state)) })
 }
 
 /// 给端口标注所属项目并丢弃无关端口。进程树归属优先于端口号匹配。

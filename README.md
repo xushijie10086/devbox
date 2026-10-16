@@ -13,7 +13,7 @@
 - **拖拽换分组**：把项目行拖到某个分组 tab 上松手，即可把它移到该分组（悬停时被拖的行变半透明、目标 tab 高亮）。
 - **切换分支**：项目名下显示当前 git 分支标签（直接读 `.git/HEAD`，不起进程，在终端里切分支也会自动同步；游离 HEAD 会特别标出）。点标签打开切换窗口：本地分支在前（当前分支置顶），后面是仅存在于远程的分支，可搜索，可先「获取远程分支」（`git fetch --prune`）。选远程分支时，本地没有就新建并跟踪，已有就直接切过去。有未提交修改时会提示；若与目标分支冲突，切换会被 git 拒绝，修改不会丢失。
 - **切换 Node / JDK 版本**：前端项目可指定 Node 版本，后端项目可指定 JDK 版本（「其它」类型两者都可选）。点项目名下的版本标签即可切换，也可在编辑项目里选。启动时会把选定版本放到 PATH 最前（JDK 同时设置 `JAVA_HOME`），启动命令与停止命令都生效；运行中的项目切换后需重启。版本来自直接扫描本机安装目录，不依赖 nvm 等 shell 函数：Node 支持 nvm / fnm / Volta / asdf / n / Homebrew，JDK 支持系统 JVM / SDKMAN / asdf / Homebrew。
-- **自动获取启动命令**：编辑项目时点启动命令右上角的「获取启动命令」，读取工作目录里的配置文件（只读，不执行任何东西），列出所有能用的启动命令供点选，推荐的排在最前；命令框是空的会先填推荐项，已有内容不会被覆盖。覆盖 Node（按 `pnpm-lock.yaml` / `yarn.lock` / `bun.lockb` 选包管理器，dev / start / serve 类脚本；Tauri 项目优先 `tauri dev`；没装依赖会提醒）、Maven（`mvnw`、Spring Boot / Quarkus / Jetty；多模块项目会指定带插件的子模块，并给出「先安装依赖再启动」和「跳过安装」两种）、Gradle（`bootRun` / `run`，含子项目）、Cargo、Go（`cmd/*` 入口、air）、Python（Django / FastAPI / Flask，优先用项目自己的 `.venv` / poetry / pipenv / uv）、Rails、Laravel、Deno、docker compose、Procfile、Makefile。原来的「自动获取」填表也改用这里的推荐项。外部工具也可以调用 `/projects/start-commands`。
+- **自动获取启动命令**：编辑项目时点启动命令右上角的「获取启动命令」，读取工作目录里的配置文件（只读，不执行任何东西），列出所有能用的启动命令供点选，推荐的排在最前；命令框是空的会先填推荐项，已有内容不会被覆盖。覆盖 Node（按 `pnpm-lock.yaml` / `yarn.lock` / `bun.lockb` 选包管理器，dev / start / serve 类脚本；Tauri 项目优先 `tauri dev`；没装依赖会提醒）、Maven（`mvnw`、Spring Boot / Quarkus / Jetty；多模块项目会指定带插件的子模块，并给出「先安装依赖再启动」和「跳过安装」两种）、Gradle（`bootRun` / `run`，含子项目）、Cargo、Go（`cmd/*` 入口、air）、Python（Django / FastAPI / Flask，优先用项目自己的 `.venv` / poetry / pipenv / uv）、Rails、Laravel、Deno、docker compose、Procfile、Makefile。原来的「自动获取」填表也改用这里的推荐项。AI agent 通过 MCP 的 `devbox_detect_project` 也能拿到这些候选。
 - **环境切换（dev / test / prod …）**：每个项目（前端、后端都行）自动读取项目里声明的环境，点项目名下的「环境」标签即可切换，列表里一眼能看到每个项目当前用的是哪个；新增项目点「自动获取」时也会告诉你读到了哪些。选定后**只在启动时生效**，不会修改项目里的任何文件，也不影响「运行脚本」（否则 `NODE_ENV=production` 会让 `npm install` 把开发依赖装丢）；选「默认」就是项目原本的行为。运行中的项目切换后需重启；选中 `prod` 一类的生产环境时标签会标红。各技术栈的识别方式：
 
   | 技术栈 | 从哪里读 | 选中后做什么 |
@@ -43,6 +43,7 @@
 - **菜单栏托盘与快速启停**：顶栏图标的菜单里列出所有项目（有分组时按分组显示），点一下就启动或停止，不用打开窗口；还有「全部停止」、「系统通知」开关，悬停提示会显示运行中的项目数。菜单只在内容变化时才重建。
 - **系统通知**：项目意外退出（含启动确认之后才崩溃的）、从托盘启停项目的结果，会发系统通知，内容是退出原因和最后一行关键输出。窗口在前台聚焦时不重复通知（应用内已有提示）；托盘里的操作因为用户本就没开窗口，总会通知。侧边栏底部的「通知」按钮或托盘菜单都可以关闭。
 - **资源监控**：卡片上显示运行中项目的 CPU / 内存 / 运行时长 / 端口探测状态。
+- **对 AI agent 开放（MCP）**：内置标准的 MCP 服务，Claude Code、Cursor 等 agent 可以直接连上来，看项目状态和日志、启停项目、切换环境、跑脚本、查端口占用……共 40 个工具，外加资源和提示词。「MCP」页面有开关、三档权限（只读 / 标准 / 完全）、可直接复制的接入配置和 agent 的调用记录，详见下面「让 AI agent 操作 DevBox」。
 
 ## 下载安装
 
@@ -107,7 +108,7 @@ npm run tauri build
 
 | 任务 | 内容 |
 |---|---|
-| 前端测试与构建 | `npm test`（含 tauri crate 与 npm 包版本一致性检查）、`npm run build`、MCP 适配器语法检查 |
+| 前端测试与构建 | `npm test`（含 tauri crate 与 npm 包版本一致性检查、MCP 转发器的端到端测试）、`npm run build` |
 | Rust（macOS / Linux / Windows） | `cargo clippy -D warnings`、`cargo test --lib`（都带 `--locked`，`Cargo.lock` 不同步会失败）；三个系统各跑一遍，Windows 上有专门的启动、进程树、版本探测、hosts 换行等测试 |
 | 应用构建（macOS / Linux / Windows） | `tauri build --debug --no-bundle`，验证前端和 Rust 能一起构建 |
 | 签名流程（macOS，仅手动运行） | 验证「创建证书 → 签名 → 打包」整条流程 |
@@ -183,6 +184,21 @@ tccutil reset SystemPolicyDocumentsFolder dev.devbox.app
 
 **局限**：自签名证书在别人的 Mac 上不被系统信任，所以**首次打开仍会提示「无法验证开发者」**（右键 → 打开，或 `xattr -cr /Applications/DevBox.app`）；这是自签名和 Apple 开发者证书（99 美元/年，签名 + 公证）的区别。想彻底消除这个提示，需要后者。
 
+## 让 AI agent 操作 DevBox（MCP）
+
+DevBox 内置一个 [MCP](https://modelcontextprotocol.io) 服务（Streamable HTTP，只监听 `127.0.0.1`）。打开应用里的「MCP」页面，复制对应客户端的配置即可接入，例如 Claude Code：
+
+```bash
+claude mcp add --transport http devbox http://127.0.0.1:8765/mcp --header "Authorization: Bearer <页面上的 token>"
+```
+
+连上之后可以直接对 agent 说「看看哪些项目在跑」「后端启动失败了，帮我查下原因」「把前端切到 test 环境并重启」「8080 是谁占的」。
+
+- **能做什么**：总览与状态、**日志**（去颜色、按级别 / 关键词 / 上下文过滤、`since_seq` 增量拉取、`wait_for_log` 等到「启动完成」或「出现报错」）、**启停**（单个 / 整组 / 全部，按依赖顺序，等端口监听才返回，失败带原因）、环境切换、脚本（只能运行项目里识别出的脚本）、git、端口占用、Node / JDK 版本、hosts、brew 服务，以及新增 / 修改 / 删除项目。完整清单见 [`devbox-mcp/README.md`](devbox-mcp/README.md)。
+- **三档权限**：**只读**（看）→ **标准**（默认，加上启停、脚本、清日志、切环境）→ **完全**（再加上结束任意进程、改 hosts、增删改项目、git pull / 切分支）。由 DevBox 服务端强制执行：超出档位的工具既不出现在 agent 的列表里，直接调用也会被拒绝；随时可改、立即生效，也可以一键关闭整个 MCP 服务。
+- **安全**：只监听回环地址；每个请求都要带 token（保存在配置目录的 `bridge.json`，Unix 上权限 0600，重启不变，可在页面重置）；校验 `Host` / `Origin` 防止网页借 DNS 重绑定攻击本机；项目的环境变量值不会返回给 agent；调用记录（含被拒绝的）都显示在页面上。
+- **只支持 stdio 的客户端**：用 `devbox-mcp/index.js`（零依赖的转发器，`node` 18+ 即可，不用 `npm install`），它自动读取 `bridge.json`，token 变了也不用改配置。
+
 ## 依赖版本约定
 
 Rust 的 `tauri` crate 与前端的 `@tauri-apps/api`、`@tauri-apps/cli` 必须是同一个「主.次」版本，否则 `tauri dev` 启动会报 `version mismatched Tauri packages`。两边都用 `~2.12` 锁定了次版本；要升级时一起改（`cargo update -p tauri` 同时 `npm install @tauri-apps/api@~X.Y @tauri-apps/cli@~X.Y`），`npm test` 会在漂移时直接报错并给出修复命令。
@@ -225,14 +241,16 @@ devbox/
 │   ├── ui.js                 # DOM / toast 辅助
 │   ├── style.css
 │   └── views/                # 各功能面板
-│       ├── projects.js  ports.js
+│       ├── projects.js  ports.js     mcp.js
 │       ├── services.js  hosts.js     logs.js
+├── devbox-mcp/               # 给「只支持 stdio」的 AI 客户端用的零依赖转发器 + MCP 使用说明
 └── src-tauri/                # Rust 后端
     ├── Cargo.toml  build.rs  tauri.conf.json
     ├── capabilities/default.json
     └── src/
         ├── main.rs  lib.rs   # 入口 + 命令注册 + 托盘
         ├── models.rs  state.rs
+        ├── mcp/              # 对 AI agent 开放的 MCP 服务：HTTP / 协议 / 工具（read、write）/ 资源与提示词 / 日志查询
         ├── platform/         # 平台差异集中在这里：unix.rs / windows.rs / listen.rs（端口枚举）
         └── commands/         # projects/process/ports/hosts/services/logs/shortcuts
 ```

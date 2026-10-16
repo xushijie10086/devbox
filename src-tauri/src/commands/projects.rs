@@ -184,7 +184,11 @@ pub fn delete_project_group(name: String, state: State<AppState>) -> Result<usiz
 
 /// 新增或更新项目（按 id 判断；id 为空则新建）
 #[tauri::command]
-pub fn save_project(mut project: Project, state: State<AppState>) -> Result<Project, String> {
+pub fn save_project(project: Project, state: State<AppState>) -> Result<Project, String> {
+    save_project_inner(project, &state)
+}
+
+pub fn save_project_inner(mut project: Project, state: &AppState) -> Result<Project, String> {
     if project.id.trim().is_empty() {
         project.id = Uuid::new_v4().to_string();
     }
@@ -226,12 +230,16 @@ pub fn reorder_projects(ids: Vec<String>, state: State<AppState>) -> Result<Vec<
 /// 删除项目
 #[tauri::command]
 pub fn delete_project(id: String, state: State<AppState>) -> Result<(), String> {
+    delete_project_inner(&id, &state)
+}
+
+pub fn delete_project_inner(id: &str, state: &AppState) -> Result<(), String> {
     // 先确保进程已停止
-    let _ = crate::commands::scripts::cancel_job(state.inner(), &id);
-    let _ = crate::commands::process::stop_project_inner(&id, state.inner());
+    let _ = crate::commands::scripts::cancel_job(state, id);
+    let _ = crate::commands::process::stop_project_inner(id, state);
     {
         let mut cfg = state.config.lock().unwrap();
-        remove_project(&mut cfg, &id);
+        remove_project(&mut cfg, id);
     }
     state.persist()?;
     Ok(())
