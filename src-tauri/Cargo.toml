@@ -1,6 +1,6 @@
 [package]
 name = "devbox"
-version = "1.4.0"
+version = "1.4.1"
 description = "本地开发帮助工具箱"
 authors = ["you"]
 edition = "2021"
@@ -38,3 +38,6 @@ windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 [features]
 # 默认无额外特性
 default = []
+
+[dev-dependencies]
+tauri = { version = "~2.12", features = ["test"] }

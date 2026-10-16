@@ -47,6 +47,10 @@ pub struct AppState {
     pub orphans_cleaned: Mutex<Vec<String>>,
     /// 尚未被前端取走的进程退出通知
     pub exit_events: Mutex<Vec<ExitEvent>>,
+    /// 最近的进程退出记录（不会被前端取走清空），供 MCP 的 devbox_recent_exits 查询
+    pub exit_history: Mutex<Vec<ExitEvent>>,
+    /// MCP 服务的运行时信息（端口、token、调用记录）
+    pub mcp: crate::mcp::Runtime,
     /// 正在退出：冻结「最近运行集合」的记录，避免停止项目的过程把它覆盖成空
     pub quitting: AtomicBool,
     /// 用户已确认退出（或收到终止信号），可以放行 ExitRequested
@@ -80,6 +84,8 @@ impl AppState {
             jobs: Mutex::new(HashMap::new()),
             orphans_cleaned: Mutex::new(Vec::new()),
             exit_events: Mutex::new(Vec::new()),
+            exit_history: Mutex::new(Vec::new()),
+            mcp: crate::mcp::Runtime::default(),
             quitting: AtomicBool::new(false),
             quit_confirmed: AtomicBool::new(false),
             restore_pending: AtomicBool::new(false),

@@ -1,8 +1,8 @@
 mod commands;
-mod http_api;
 mod logstore;
 mod models;
 mod notify;
+mod mcp;
 mod platform;
 mod state;
 #[cfg(test)]
@@ -33,8 +33,8 @@ pub fn run() {
             commands::git::spawn_status_worker(app.handle().clone());
             // Ctrl+C / kill：先停掉所有项目再退出，不留孤儿进程
             commands::lifecycle::install_signal_handler(app.handle().clone());
-            // 启动本地 HTTP 桥接服务，供 MCP 适配器 / agent 调用
-            http_api::spawn(app.handle().clone());
+            // 启动 MCP 服务（Streamable HTTP），供 AI agent 调用
+            mcp::spawn(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -104,6 +104,12 @@ pub fn run() {
             commands::logs::get_logs,
             commands::logs::clear_logs,
             commands::logs::log_file_path,
+            // MCP
+            mcp::mcp_info,
+            mcp::mcp_set_settings,
+            mcp::mcp_reset_token,
+            mcp::mcp_activity,
+            mcp::mcp_clear_activity,
             // shortcuts
             commands::shortcuts::open_in_editor,
             commands::shortcuts::open_url,

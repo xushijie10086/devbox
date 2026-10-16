@@ -22,6 +22,10 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
 /// 拉取某个项目的最新代码
 #[tauri::command(async)]
 pub fn git_pull(id: String, state: State<AppState>) -> Result<StartOutcome, String> {
+    git_pull_inner(&id, &state)
+}
+
+pub fn git_pull_inner(id: &str, state: &AppState) -> Result<StartOutcome, String> {
     let project = state
         .config
         .lock()
@@ -31,9 +35,9 @@ pub fn git_pull(id: String, state: State<AppState>) -> Result<StartOutcome, Stri
         .find(|p| p.id == id)
         .cloned()
         .ok_or("找不到项目")?;
-    let running = state.procs.lock().unwrap().contains_key(&id);
+    let running = state.procs.lock().unwrap().contains_key(id);
     let result = pull_in(&project.path, running);
-    refresh_status_of(&state, &id);
+    refresh_status_of(state, id);
     result
 }
 
@@ -385,7 +389,11 @@ fn ensure_repo(path: &str) -> Result<(), String> {
 /// 列出可切换的分支：本地分支在前（当前分支置顶），然后是「只存在于远程」的分支
 #[tauri::command(async)]
 pub fn git_branches(id: String, state: State<AppState>) -> Result<BranchList, String> {
-    let project = project_of(&state, &id)?;
+    git_branches_inner(&id, &state)
+}
+
+pub fn git_branches_inner(id: &str, state: &AppState) -> Result<BranchList, String> {
+    let project = project_of(state, id)?;
     list_branches(&project.path)
 }
 
@@ -453,10 +461,14 @@ fn parse_branches(text: &str) -> Vec<BranchEntry> {
 /// 若本地已有同名分支就直接切过去，否则新建一个跟踪它的本地分支。
 #[tauri::command(async)]
 pub fn git_checkout(id: String, name: String, kind: String, state: State<AppState>) -> Result<StartOutcome, String> {
-    let project = project_of(&state, &id)?;
-    let running = state.procs.lock().unwrap().contains_key(&id);
-    let result = checkout_in(&project.path, &name, &kind, running);
-    refresh_status_of(&state, &id);
+    git_checkout_inner(&id, &name, &kind, &state)
+}
+
+pub fn git_checkout_inner(id: &str, name: &str, kind: &str, state: &AppState) -> Result<StartOutcome, String> {
+    let project = project_of(state, id)?;
+    let running = state.procs.lock().unwrap().contains_key(id);
+    let result = checkout_in(&project.path, name, kind, running);
+    refresh_status_of(state, id);
     result
 }
 
@@ -504,7 +516,11 @@ fn checkout_in(path: &str, name: &str, kind: &str, project_running: bool) -> Res
 /// 获取远程最新的分支信息（git fetch --prune），让列表里能看到新分支
 #[tauri::command(async)]
 pub fn git_fetch(id: String, state: State<AppState>) -> Result<StartOutcome, String> {
-    let project = project_of(&state, &id)?;
+    git_fetch_inner(&id, &state)
+}
+
+pub fn git_fetch_inner(id: &str, state: &AppState) -> Result<StartOutcome, String> {
+    let project = project_of(state, id)?;
     ensure_repo(&project.path)?;
     let out = match run_git(&project.path, &["fetch", "--prune"], PULL_TIMEOUT) {
         Ok(o) => o,
@@ -514,7 +530,7 @@ pub fn git_fetch(id: String, state: State<AppState>) -> Result<StartOutcome, Str
     if !out.ok {
         return Err(explain_failure("获取远程分支", &out.stderr, &out.stdout));
     }
-    refresh_status_of(&state, &id); // fetch 之后「落后」数会变
+    refresh_status_of(state, id); // fetch 之后「落后」数会变
     Ok(StartOutcome::success("已获取远程最新分支".into()))
 }
 

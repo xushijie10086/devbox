@@ -52,7 +52,7 @@ function buildRow(l, term) {
   return el("div", { class: cls.join(" ") }, [el("span", { class: "log-ts" }, l.ts), textEl]);
 }
 
-async function copyText(text) {
+export async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
     return true;

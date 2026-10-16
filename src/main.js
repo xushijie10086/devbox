@@ -3,13 +3,14 @@ import * as ports from "./views/ports.js";
 import * as services from "./views/services.js";
 import * as hosts from "./views/hosts.js";
 import * as logs from "./views/logs.js";
+import * as mcp from "./views/mcp.js";
 import { icon } from "./icons.js";
 import { loadPlatform } from "./platform.js";
 import { api } from "./api.js";
 import { confirmDialog, toast, summarizeStart } from "./ui.js";
 import { listen } from "@tauri-apps/api/event";
 
-const views = { projects, ports, services, hosts, logs };
+const views = { projects, ports, services, hosts, logs, mcp };
 
 const viewRoot = document.getElementById("view-root");
 const nav = document.getElementById("nav");
