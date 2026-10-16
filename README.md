@@ -86,7 +86,8 @@
 cd devbox
 npm install
 
-# 首次运行前生成图标（可选，仓库已内置一套；如需自定义用下面命令）
+# 图标：仓库已内置一套。源文件是 app-icon.svg（立方体 + 终端提示符 >_）；改完后把它导出成
+# 1024×1024 透明背景的 app-icon.png，再重新生成各平台的图标：
 # npm run tauri icon app-icon.png
 
 # 开发模式（热更新，自动同时起前端 dev server 与 Rust 后端）
