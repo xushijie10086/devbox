@@ -190,6 +190,51 @@ jobs:
           # 两个不同的二进制，指定要求（身份）完全一样 = 升级后授权不会失效
           diff <(codesign -dr - a 2>&1 | grep -i designated) <(codesign -dr - b 2>&1 | grep -i designated)
 
+      # 上一步的 .p12 是 openssl 造的，和用户从「钥匙串访问」导出的格式不一样（v1.4.0 发布就栽在这里：
+      # 脚本用 openssl 解析钥匙串导出的 .p12，抽出来的证书是空的）。这一步改让 macOS 自己导出再导入
+      - name: 发布用的导入脚本（.p12 由钥匙串导出，更接近真实使用）
+        timeout-minutes: 5
+        env:
+          CI: "true"
+        run: |
+          d="$RUNNER_TEMP/exp"; mkdir -p "$d"; cd "$d"
+          name="DevBox Export Test"
+          cat > openssl.cnf <<CNF
+          [req]
+          distinguished_name = dn
+          x509_extensions = ext
+          prompt = no
+          [dn]
+          CN = $name
+          [ext]
+          basicConstraints = critical,CA:false
+          keyUsage = critical,digitalSignature
+          extendedKeyUsage = critical,codeSigning
+          CNF
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 30 -config openssl.cnf -keyout key.pem -out cert.pem 2>/dev/null
+          /usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem -name "$name" -out gen.p12 -passout pass:gen-pass
+          # 放进单独的钥匙串（-A：允许导出私钥），再用 security export 导出，和「钥匙串访问」导出的 .p12 同源
+          kc2="$d/exp.keychain-db"
+          security create-keychain -p kcpass "$kc2"
+          security unlock-keychain -p kcpass "$kc2"
+          security import gen.p12 -k "$kc2" -P gen-pass -A >/dev/null
+          security export -k "$kc2" -t identities -f pkcs12 -P export-pass -o exported.p12
+          security delete-keychain "$kc2"
+          ls -l exported.p12
+          export SIGNING_CERT_P12="$(/usr/bin/openssl base64 -A -in exported.p12)"
+          export SIGNING_CERT_PASSWORD=export-pass
+          "$GITHUB_WORKSPACE/scripts/import-signing-cert.sh" | tee out.txt
+          grep -q "已导入签名身份：${name}" out.txt
+          printf '#include <stdio.h>\nint main(void){return 0;}\n' > t.c
+          cc t.c -o a && codesign --force -s "$name" -i dev.devbox.app a
+          codesign -dr - a 2>&1 | tee a.txt
+          grep -q 'certificate leaf' a.txt
+          ! grep -q 'cdhash' a.txt
+          echo "--- 密码不对时要有明确的报错，而不是莫名其妙失败"
+          export SIGNING_CERT_PASSWORD=wrong-pass
+          if "$GITHUB_WORKSPACE/scripts/import-signing-cert.sh" > bad.txt 2>&1; then echo "密码不对却成功了"; exit 1; fi
+          grep -q "导入 .p12 失败" bad.txt
+
       - name: 开发模式：sign-and-run.sh 用固定证书签名
         run: |
           d="$RUNNER_TEMP/sr"; mkdir -p "$d"; cd "$d"
