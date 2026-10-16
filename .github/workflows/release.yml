@@ -102,8 +102,38 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
 
+      # macOS 按「代码签名身份」记住文件夹授权：每个版本都用同一张证书签名，用户升级后就不会再弹框。
+      # 证书从本机导出放进仓库 Secrets，步骤见 README「发布包也固定签名」。
+      - name: 导入固定签名证书 (macOS)
+        if: runner.os == 'macOS'
+        env:
+          SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          if [ -z "$SIGNING_CERT_P12" ] || [ -z "$SIGNING_CERT_PASSWORD" ]; then
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo "::error::没有配置 SIGNING_CERT_P12 / SIGNING_CERT_PASSWORD。没有固定证书打出来的包，用户每次升级都会重新弹「想访问文稿文件夹」。请先按 README「发布包也固定签名」配置，再在 Actions 里 Re-run 这次发布"
+              exit 1
+            fi
+            echo "::warning::没有配置 SIGNING_CERT_P12，这次打出的是临时签名（只用于验证打包，不要发布）"
+            exit 0
+          fi
+          scripts/import-signing-cert.sh
+
       - name: 打包
         run: npm run tauri -- build ${{ matrix.build_args }}
+
+      - name: 检查签名身份 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          [ -n "${APPLE_SIGNING_IDENTITY:-}" ] || { echo "未配置固定证书，跳过检查"; exit 0; }
+          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/DevBox.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dr - "$app" 2>&1 | tee dr.txt
+          grep -q 'identifier "dev.devbox.app"' dr.txt
+          # 固定证书的签名是 certificate leaf = H"…"；临时签名是 cdhash H"…"，每次构建都不同
+          grep -q 'certificate leaf' dr.txt
+          ! grep -q 'cdhash' dr.txt
 
       - name: 整理产物 (macOS)
         if: runner.os == 'macOS'

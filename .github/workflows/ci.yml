@@ -154,6 +154,42 @@ jobs:
           grep -q "无需重复创建" second.txt
           security find-identity -v -p codesigning
 
+      - name: 发布用的导入脚本：导入 .p12 → 签名 → 身份固定
+        env:
+          CI: "true"
+        run: |
+          d="$RUNNER_TEMP/imp"; mkdir -p "$d"; cd "$d"
+          # 造一张和 create-signing-cert.sh 同样用途的证书，导出成 .p12，模拟「从本机导出再放进 Secrets」
+          name="DevBox Import Test"
+          cat > openssl.cnf <<CNF
+          [req]
+          distinguished_name = dn
+          x509_extensions = ext
+          prompt = no
+          [dn]
+          CN = $name
+          [ext]
+          basicConstraints = critical,CA:false
+          keyUsage = critical,digitalSignature
+          extendedKeyUsage = critical,codeSigning
+          CNF
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 30 -config openssl.cnf -keyout key.pem -out cert.pem 2>/dev/null
+          /usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem -name "$name" -out id.p12 -passout pass:test-pass
+          export SIGNING_CERT_P12="$(/usr/bin/openssl base64 -A -in id.p12)"
+          export SIGNING_CERT_PASSWORD=test-pass
+          "$GITHUB_WORKSPACE/scripts/import-signing-cert.sh" | tee out.txt
+          grep -q "已导入签名身份：$name" out.txt
+          grep -q "^APPLE_SIGNING_IDENTITY=$name\$" "$GITHUB_ENV"
+          printf '#include <stdio.h>\nint main(void){return 0;}\n' > t.c
+          cc t.c -o a && cp a b
+          codesign --force -s "$name" -i dev.devbox.app a
+          codesign --force -s "$name" -i dev.devbox.app b
+          codesign -dr - a 2>&1 | tee a.txt
+          grep -q 'certificate leaf' a.txt
+          ! grep -q 'cdhash' a.txt
+          # 两个不同的二进制，指定要求（身份）完全一样 = 升级后授权不会失效
+          diff <(codesign -dr - a 2>&1 | grep -i designated) <(codesign -dr - b 2>&1 | grep -i designated)
+
       - name: 开发模式：sign-and-run.sh 用固定证书签名
         run: |
           d="$RUNNER_TEMP/sr"; mkdir -p "$d"; cd "$d"

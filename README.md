@@ -14,6 +14,19 @@
 - **切换分支**：项目名下显示当前 git 分支标签（直接读 `.git/HEAD`，不起进程，在终端里切分支也会自动同步；游离 HEAD 会特别标出）。点标签打开切换窗口：本地分支在前（当前分支置顶），后面是仅存在于远程的分支，可搜索，可先「获取远程分支」（`git fetch --prune`）。选远程分支时，本地没有就新建并跟踪，已有就直接切过去。有未提交修改时会提示；若与目标分支冲突，切换会被 git 拒绝，修改不会丢失。
 - **切换 Node / JDK 版本**：前端项目可指定 Node 版本，后端项目可指定 JDK 版本（「其它」类型两者都可选）。点项目名下的版本标签即可切换，也可在编辑项目里选。启动时会把选定版本放到 PATH 最前（JDK 同时设置 `JAVA_HOME`），启动命令与停止命令都生效；运行中的项目切换后需重启。版本来自直接扫描本机安装目录，不依赖 nvm 等 shell 函数：Node 支持 nvm / fnm / Volta / asdf / n / Homebrew，JDK 支持系统 JVM / SDKMAN / asdf / Homebrew。
 - **自动获取启动命令**：编辑项目时点启动命令右上角的「获取启动命令」，读取工作目录里的配置文件（只读，不执行任何东西），列出所有能用的启动命令供点选，推荐的排在最前；命令框是空的会先填推荐项，已有内容不会被覆盖。覆盖 Node（按 `pnpm-lock.yaml` / `yarn.lock` / `bun.lockb` 选包管理器，dev / start / serve 类脚本；Tauri 项目优先 `tauri dev`；没装依赖会提醒）、Maven（`mvnw`、Spring Boot / Quarkus / Jetty；多模块项目会指定带插件的子模块，并给出「先安装依赖再启动」和「跳过安装」两种）、Gradle（`bootRun` / `run`，含子项目）、Cargo、Go（`cmd/*` 入口、air）、Python（Django / FastAPI / Flask，优先用项目自己的 `.venv` / poetry / pipenv / uv）、Rails、Laravel、Deno、docker compose、Procfile、Makefile。原来的「自动获取」填表也改用这里的推荐项。外部工具也可以调用 `/projects/start-commands`。
+- **环境切换（dev / test / prod …）**：每个项目（前端、后端都行）自动读取项目里声明的环境，点项目名下的「环境」标签即可切换，列表里一眼能看到每个项目当前用的是哪个；新增项目点「自动获取」时也会告诉你读到了哪些。选定后**只在启动时生效**，不会修改项目里的任何文件，也不影响「运行脚本」（否则 `NODE_ENV=production` 会让 `npm install` 把开发依赖装丢）；选「默认」就是项目原本的行为。运行中的项目切换后需重启；选中 `prod` 一类的生产环境时标签会标红。各技术栈的识别方式：
+
+  | 技术栈 | 从哪里读 | 选中后做什么 |
+  |---|---|---|
+  | Spring Boot（Maven / Gradle，含多模块） | `application-<名>.yml` / `.yaml` / `.properties`、`bootstrap-<名>.*`；并读出 `spring.profiles.active` 作为「默认环境」 | 设置 `SPRING_PROFILES_ACTIVE=<名>` |
+  | Node 项目的脚本 | `package.json` 里 `dev:test`、`start:prod`、`serve-staging` 这类「启动词 + 环境词」的脚本 | 改用该脚本（按项目的包管理器拼命令） |
+  | Vite / Vue CLI | `.env.<模式>`（忽略 `.local`、`.example` 等） | 启动命令追加 `--mode <模式>`（npm 自动补 `--`） |
+  | Node 后端（Nest / Express / Koa / Fastify…） | `.env.<名>`、`config/<名>` 下的 json / js / ts / yml 等（名字必须是 dev / test / prod 这类环境词） | 设置 `NODE_ENV=<名>` |
+  | Rails | `config/environments/<名>.rb` | 设置 `RAILS_ENV=<名>` |
+  | Laravel | `.env.<名>` | 设置 `APP_ENV=<名>` |
+
+  几点说明：同名环境（比如同一个目录里既有 Spring 又有前端）会合并成一个；选中的环境若在项目里找不到了（文件被删或切了分支），启动会被拒绝并说明原因，**不会悄悄退回默认环境**去启动；环境里的变量会盖过「编辑项目」里手填的同名环境变量，并在项目日志里写明；启动命令里已经写死 `-Dspring-boot.run.profiles=…` 之类时，它的优先级更高，弹窗里会提醒。暂不处理 Maven 的 `-P` 构建 profile。
+
 - **自动识别版本要求**：新增项目点「自动获取」时，会读取项目声明的 Node / JDK 版本并在本机已安装的版本里自动选中——Node 来自 `.nvmrc`、`.node-version`、`.tool-versions`、`package.json` 的 `volta` / `engines`（范围按 semver 匹配，取满足要求的最低主版本，同主版本取最新，最保守）；JDK 来自 `.sdkmanrc`、`.tool-versions`、`.java-version`、`pom.xml`（`java.version` / `maven.compiler.*`）、Gradle（toolchain / sourceCompatibility），`1.8` 与 `8` 视为同一版本。本机没有满足要求的版本时会明确提示缺什么。对多模块 Maven 项目（根 pom 没有 spring-boot 插件）还会提醒应把工作目录改为哪个子模块。
 - **退出与恢复**：关闭窗口、托盘「退出」或 Cmd+Q 时，若有运行中的项目会先弹确认，确认后停止所有项目再退出（项目的输出管道由 DevBox 持有，DevBox 退出后它们会因 SIGPIPE 崩溃，所以无法「退出但保持运行」）；收到 Ctrl+C / `kill` 信号也会先停掉项目，不留孤儿进程。运行中的项目集合会持续记录到配置文件（`last_running`），因此正常退出、崩溃甚至被强杀后，下次启动都会提示「上次有 N 个项目在运行，是否恢复启动」。记录里同时保存每个项目进程的 pid 与进程启动时间：DevBox 被强杀 / 崩溃（含 `tauri dev` 重编译重启）后项目进程会变成孤儿继续占着端口，下次启动时会先把它们清理掉（pid 和启动时间都对得上才清理，pid 被别的进程复用不会误杀），再提示恢复。后台每 2 秒巡检一次，窗口关着也能发现项目崩溃。
 - **脚本 / 构建任务**：每个项目行有「⚙ 脚本」按钮，列出识别到的脚本，点一下就运行：Node（`package.json` 的 scripts，按 npm / pnpm / yarn 自动选命令，没有 `node_modules` 时提醒先安装依赖）、Maven（优先用 `./mvnw`；多模块项目提示先 `install`）、Gradle、Cargo、Go、Python、Makefile 目标，也可以输入自定义命令。脚本与启动项目共用同一套环境（选定的 Node / JDK、项目环境变量），输出写入项目日志；每个项目同时一个脚本任务，运行中行内显示带计时的标签，点击可取消（连同子进程一起结束）；完成 / 失败（带退出原因与最后几行输出）都会提示，窗口在后台时还会发系统通知。
@@ -145,6 +158,29 @@ tccutil reset SystemPolicyDocumentsFolder dev.devbox.app
 - GitHub Actions 上打出来的发布包仍是未签名的（CI 里没有你本机的证书），自己用请用 `scripts/build-signed.sh` 本地打包。
 - 自签名证书只对你自己的 Mac 有效；要给别人用，需要 Apple 开发者账号做 Developer ID 签名和公证。
 - 最省事的办法其实是把项目放到不受保护的目录（如 `~/code`），那样根本不会弹。
+
+## 发布包也固定签名（让所有用户升级后不再弹框）
+
+上一节解决的是你自己机器上的弹窗。给别人用的 GitHub Release，也要**每个版本都用同一张证书签名**，用户才只在第一次弹一次，之后升级不再弹。做法是把你本机那张证书导出，放进仓库的 Secrets，发布时由 CI 签名（`scripts/import-signing-cert.sh`）。
+
+**1. 导出证书**（只需要一次）：打开「钥匙串访问」→ 左侧选「登录」→ 上方选「我的证书」→ 找到 `DevBox Local Signing`（展开能看到下面有私钥）→ 右键「导出…」→ 格式选 `.p12` → 设一个密码（记住它）。只导出这一张，不要用「导出全部」。
+
+**2. 放进仓库 Secrets**：GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret，添加两个：
+
+| 名称 | 内容 |
+|---|---|
+| `SIGNING_CERT_P12` | `.p12` 文件的 base64：终端执行 `base64 -i DevBox-signing.p12 \| pbcopy`，粘贴 |
+| `SIGNING_CERT_PASSWORD` | 第 1 步设的密码 |
+
+装了 [gh](https://cli.github.com) 的话也可以：`gh secret set SIGNING_CERT_P12 < <(base64 -i DevBox-signing.p12)` 和 `gh secret set SIGNING_CERT_PASSWORD`。
+
+**3. 保管好 `.p12` 和密码**。证书丢了或换了，签名身份就变了，所有用户升级时会再弹一次。
+
+配好之后，打标签发布时 macOS 包自动用这张证书签名，并检查签名里是 `certificate leaf`（固定身份）而不是 `cdhash`（临时签名，每次不同），不满足就让发布失败。**打标签时如果没配 Secrets，发布会直接失败**，而不是悄悄发出一个每次升级都弹框的包；配好后在 Actions 里重新运行那次发布即可，不需要重打标签。
+
+本机打的包和 CI 打的包用的是同一张证书，所以身份一致，你自己装官方包也不会多弹一次。
+
+**局限**：自签名证书在别人的 Mac 上不被系统信任，所以**首次打开仍会提示「无法验证开发者」**（右键 → 打开，或 `xattr -cr /Applications/DevBox.app`）；这是自签名和 Apple 开发者证书（99 美元/年，签名 + 公证）的区别。想彻底消除这个提示，需要后者。
 
 ## 依赖版本约定
 

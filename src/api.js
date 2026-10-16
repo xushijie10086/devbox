@@ -71,6 +71,11 @@ export const api = {
   projectGitStatus: () => invoke("project_git_status"),
   listRuntimes: () => invoke("list_runtimes"),
 
+  // 项目环境（dev / test / prod …）：自动读取项目里声明的环境，选定后启动时生效
+  detectEnvironments: (path, startCommand) => invoke("detect_environments", { path, startCommand }),
+  projectEnvs: () => invoke("project_envs"),
+  setProjectEnv: (id, env) => invoke("set_project_env", { id, env }),
+
   // 快捷入口
   openInEditor: (path, editor) => invoke("open_in_editor", { path, editor }),
   openUrl: (url) => invoke("open_url", { url }),

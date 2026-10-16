@@ -55,6 +55,9 @@ pub fn run() {
             commands::projects::delete_project_group,
             commands::projects::detect_project,
             commands::startcmd::detect_start_commands,
+            commands::envs::detect_environments,
+            commands::envs::project_envs,
+            commands::envs::set_project_env,
             commands::projects::pick_directory,
             platform::get_platform,
             // process

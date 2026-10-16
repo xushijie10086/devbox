@@ -1,5 +1,20 @@
 # 更新日志
 
+## 1.4.0 · 2026-10-16
+
+项目环境切换，以及让所有用户升级后不再重复弹「文稿文件夹」授权框的发布包固定签名。
+
+### 新增
+- **环境切换（dev / test / prod …）**：每个项目（前端、后端都行）自动读取项目里声明的环境，项目列表的「环境」标签一眼看到当前环境，点一下弹窗切换；新增项目点「自动获取」时会提示读到了哪些环境
+  - 识别：Spring Boot 的 `application-<名>.yml|yaml|properties`（含多模块，并读出 `spring.profiles.active` 作为默认环境）；Node 的 `dev:test` / `start:prod` 这类脚本；Vite / Vue CLI 的 `.env.<模式>`；Node 后端的 `.env.<名>` 与 `config/<名>.*`；Rails 的 `config/environments/*.rb`；Laravel 的 `.env.<名>`
+  - 生效：只在启动时注入环境变量（`SPRING_PROFILES_ACTIVE` / `NODE_ENV` / `RAILS_ENV` / `APP_ENV`）、追加 `--mode` 或改用对应脚本；不修改项目里的任何文件，也不影响「运行脚本」
+  - 安全：选中的环境在项目里找不到了就拒绝启动并说明原因，不悄悄退回默认；选中生产类环境时标签标红；环境变量盖过手填的同名变量时在项目日志里写明；启动命令已写死 profile 时提醒
+  - 暂不处理 Maven 的 `-P` 构建 profile
+
+### 工程
+- 发布包固定签名：macOS 的 Release 用同一张证书签名（证书放在仓库 Secrets `SIGNING_CERT_P12` / `SIGNING_CERT_PASSWORD`），用户升级后不会再重复弹「想访问文稿文件夹」。打标签时没配置证书会让发布失败，不会悄悄发出临时签名的包；打包后检查签名确实是固定身份。步骤见 README「发布包也固定签名」
+- CI 的手动「签名流程」任务新增对导入脚本的验证：导入 .p12 → 签名 → 两个不同的二进制指定要求完全一致
+
 ## 1.3.0 · 2026-10-14
 
 DevBox 现在支持 **Windows** 和 **Linux**，不再只是 macOS 应用。

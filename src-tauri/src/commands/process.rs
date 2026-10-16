@@ -130,7 +130,15 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
     if project.start_command.trim().is_empty() {
         return Err("启动命令为空，请先编辑项目填写启动命令".into());
     }
-    let mut cmd = shell_command(&project, &project.start_command)?;
+    // 选了环境（dev / test / prod …）就按它调整启动命令、注入环境变量；只作用于启动，不影响脚本任务
+    // （比如 install 时带上 NODE_ENV=production 会把开发依赖装丢）
+    let applied = crate::commands::envs::resolve(&project)?;
+    let command = applied.as_ref().map_or(project.start_command.as_str(), |a| a.command.as_str());
+    let extra_env: Vec<(String, String)> = applied
+        .as_ref()
+        .map(|a| a.vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    let mut cmd = shell_command_with(&project, command, &extra_env)?;
 
     let mut child = cmd
         .spawn()
@@ -138,7 +146,13 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
     let pid = child.id();
 
     let buf = state.log_buffer(id);
-    push_log(&buf, "system", format!("▶ 启动: {} (pid {pid})", project.start_command));
+    push_log(&buf, "system", format!("▶ 启动: {command} (pid {pid})"));
+    if let Some(a) = &applied {
+        push_log(&buf, "system", format!("使用环境: {}（{}）", a.name, a.summary));
+        for k in a.vars.keys().filter(|k| project.env.contains_key(*k)) {
+            push_log(&buf, "system", format!("环境「{}」覆盖了项目里手填的环境变量 {k}", a.name));
+        }
+    }
     if let Some(rt) = crate::commands::runtime::describe(&project) {
         push_log(&buf, "system", format!("使用指定版本: {rt}"));
     }
@@ -164,6 +178,11 @@ pub fn start_project_inner(id: &str, state: &AppState) -> Result<(), String> {
 /// 构造「在项目工作目录里，用登录 shell 执行一条命令」：带上选定的 Node / JDK 版本前缀和项目环境变量，
 /// 输出走管道。启动项目和运行脚本共用，保证两者环境一致。
 pub(crate) fn shell_command(project: &Project, command: &str) -> Result<Command, String> {
+    shell_command_with(project, command, &[])
+}
+
+/// 同 shell_command，另加一组环境变量（选定的项目环境）；同名时盖过项目里手填的
+pub(crate) fn shell_command_with(project: &Project, command: &str, extra_env: &[(String, String)]) -> Result<Command, String> {
     if !std::path::Path::new(&project.path).is_dir() {
         return Err(format!("工作目录不存在或不是目录：{}", project.path));
     }
@@ -175,6 +194,9 @@ pub(crate) fn shell_command(project: &Project, command: &str) -> Result<Command,
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in &project.env {
+        cmd.env(k, v);
+    }
+    for (k, v) in extra_env {
         cmd.env(k, v);
     }
     Ok(cmd)
@@ -736,6 +758,58 @@ mod tests {
         assert!(all.contains("使用指定版本: Node 18.19.1 · JDK 17.0.9"), "{all}");
     }
 
+    /// 一个带 Spring profile 文件的项目目录
+    fn spring_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("devbox-env-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("src/main/resources")).unwrap();
+        std::fs::write(d.join("pom.xml"), "<project/>").unwrap();
+        std::fs::write(d.join("src/main/resources/application-test.yml"), "").unwrap();
+        d
+    }
+
+    #[test]
+    fn selected_environment_reaches_the_process_but_not_script_jobs() {
+        let d = spring_dir("start");
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": d, "start_command": "echo \"profile=[$SPRING_PROFILES_ACTIVE]\"",
+            "active_env": "test",
+        }));
+        let out = start_and_verify_with("t", &st, Duration::from_millis(800), Duration::from_secs(3)).unwrap();
+        let all: String = st.log_buffer("t").snapshot().into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n");
+        assert!(all.contains("profile=[test]"), "{all}\n{}", out.message);
+        assert!(all.contains("使用环境: test（设置 SPRING_PROFILES_ACTIVE=test）"), "{all}");
+
+        // 脚本任务（install / build）共用 shell_command，不能带上环境：NODE_ENV=production 会让 npm install 丢掉开发依赖
+        let project = get_project(&st, "t").unwrap();
+        let o = shell_command(&project, "echo \"profile=[$SPRING_PROFILES_ACTIVE]\"").unwrap().output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "profile=[]");
+    }
+
+    #[test]
+    fn selected_environment_overrides_a_hand_written_variable_and_says_so() {
+        let d = spring_dir("override");
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "t", "path": d, "start_command": "echo \"profile=[$SPRING_PROFILES_ACTIVE]\"",
+            "active_env": "test", "env": {"SPRING_PROFILES_ACTIVE": "手填的"},
+        }));
+        start_and_verify_with("t", &st, Duration::from_millis(800), Duration::from_secs(3)).unwrap();
+        let all: String = st.log_buffer("t").snapshot().into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n");
+        assert!(all.contains("profile=[test]"), "{all}");
+        assert!(all.contains("覆盖了项目里手填的环境变量 SPRING_PROFILES_ACTIVE"), "{all}");
+    }
+
+    #[test]
+    fn start_is_refused_when_the_selected_environment_no_longer_exists() {
+        let d = spring_dir("gone");
+        let st = state_with(serde_json::json!({
+            "id": "t", "name": "官网", "path": d, "start_command": "sleep 30", "active_env": "prod",
+        }));
+        let err = start_and_verify_with("t", &st, Duration::from_millis(300), Duration::from_secs(1)).unwrap_err();
+        assert!(err.contains("找不到") && err.contains("prod"), "{err}");
+        assert!(running_ids(&st).is_empty(), "没有悄悄退回默认环境去启动");
+    }
+
     #[test]
     fn missing_selected_runtime_blocks_start_with_clear_message() {
         let st = state_with(serde_json::json!({
@@ -1189,6 +1263,28 @@ mod windows_tests {
         let out = run(&sleep_command(10), Some(31999), &workdir()).unwrap();
         assert_eq!(out.level, "warning");
         assert!(out.message.contains("31999"), "{}", out.message);
+    }
+
+    #[test]
+    fn selected_environment_reaches_the_process_but_not_script_jobs() {
+        let d = std::env::temp_dir().join(format!("devbox-win-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("src/main/resources")).unwrap();
+        std::fs::write(d.join("pom.xml"), "<project/>").unwrap();
+        std::fs::write(d.join("src/main/resources/application-test.yml"), "").unwrap();
+        let st = state_of(serde_json::json!([{
+            "id": "t", "name": "t", "path": d, "start_command": "echo profile=[%SPRING_PROFILES_ACTIVE%]",
+            "active_env": "test",
+        }]));
+        start_and_verify_with("t", &st, Duration::from_millis(1500), Duration::from_secs(3)).unwrap();
+        let all = logs(&st, "t");
+        assert!(all.contains("profile=[test]"), "{all}");
+        assert!(all.contains("使用环境: test"), "{all}");
+
+        // 脚本任务共用 shell_command，不能带上环境；变量未设置时 cmd 会原样保留 %…%
+        let project = get_project(&st, "t").unwrap();
+        let o = shell_command(&project, "echo profile=[%SPRING_PROFILES_ACTIVE%]").unwrap().output().unwrap();
+        assert!(String::from_utf8_lossy(&o.stdout).contains("profile=[%SPRING_PROFILES_ACTIVE%]"), "{:?}", o);
     }
 
     #[test]

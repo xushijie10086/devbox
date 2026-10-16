@@ -388,6 +388,13 @@ fn detect_in(dir: &Path, installed: &crate::commands::runtime::Runtimes) -> Resu
     d.node = crate::commands::runtime::suggest_node(dir, &installed.node);
     d.java = crate::commands::runtime::suggest_java(dir, &installed.java);
     d.notes = maven_notes(dir);
+    // 项目里声明的环境（dev / test / prod …）：告诉用户读到了哪些，保存后在列表上切换
+    let envs = crate::commands::envs::scan(dir, d.start_command.as_deref().unwrap_or(""));
+    if !envs.profiles.is_empty() {
+        let names = envs.profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("、");
+        d.notes.push(format!("识别到环境：{names}。保存后可在项目列表的「环境」标签里切换"));
+        d.notes.extend(envs.notes);
+    }
 
     d.summary = if hint.is_empty() {
         "未识别到已知项目类型，请手动填写".into()
@@ -680,6 +687,20 @@ mod detect_runtime_tests {
         assert!(r.notes[0].contains("No plugin found") && r.notes[0].contains("admin"), "{:?}", r.notes);
         // 单模块 / 根 pom 自带插件：不打扰
         let d = dir("single", &[("pom.xml", "<project><artifactId>a</artifactId></project>")]);
+        assert!(detect_in(&d, &installed()).unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn detect_tells_which_environments_were_read() {
+        let d = dir("envs", &[
+            ("pom.xml", "<project><artifactId>a</artifactId></project>"),
+            ("src/main/resources/application-dev.yml", ""),
+            ("src/main/resources/application-prod.yml", ""),
+        ]);
+        let r = detect_in(&d, &installed()).unwrap();
+        assert!(r.notes.iter().any(|n| n.contains("识别到环境：dev、prod") && n.contains("「环境」标签")), "{:?}", r.notes);
+        // 没有环境声明的项目不打扰
+        let d = dir("envs-none", &[("pom.xml", "<project><artifactId>a</artifactId></project>")]);
         assert!(detect_in(&d, &installed()).unwrap().notes.is_empty());
     }
 

@@ -43,6 +43,9 @@ pub struct Project {
     /// 启动前需要先就绪的项目 id（如后端依赖数据库项目，前端依赖后端）
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// 选中的环境名（dev / test / prod …，由 envs.rs 从项目文件里识别）；None 表示默认
+    #[serde(default)]
+    pub active_env: Option<String>,
 }
 
 /// 一个运行中项目进程的记录
