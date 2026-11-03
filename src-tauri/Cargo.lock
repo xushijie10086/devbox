@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "devbox"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "ctrlc",
