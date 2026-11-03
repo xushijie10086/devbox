@@ -238,8 +238,13 @@ body.dragging-active { cursor: grabbing; user-select: none; }
 
 /* ---- 项目库：tab 分组 ---- */
 .tabs-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
-.tabs { display: flex; align-items: flex-end; gap: 2px; overflow-x: auto; min-width: 0; scrollbar-width: none; }
-.tabs::-webkit-scrollbar { display: none; }
+/* 超出宽度时要能滚：之前把滚动条整个藏了，Windows / Linux 的普通鼠标就没法横向滚动（滚轮转换见 tabs.js）。
+   用细滚动条，macOS 的覆盖式滚动条平时本来就不显示 */
+.tabs { display: flex; align-items: flex-end; gap: 2px; overflow-x: auto; overflow-y: hidden; min-width: 0; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.tabs::-webkit-scrollbar { height: 6px; }
+.tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.tabs::-webkit-scrollbar-thumb:hover { background: #3a4152; }
+.tabs::-webkit-scrollbar-track { background: transparent; }
 .tab {
   display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
   padding: 8px 14px 9px; margin-bottom: -1px; cursor: pointer; font-size: 13.5px;

@@ -1,3 +1,4 @@
+import { wheelToScroll, scrollLeftToReveal } from "../tabs.js";
 import { api } from "../api.js";
 import { el, toast, guard, fmtUptime, confirmDialog, choiceDialog, summarizeStart, summarizePull } from "../ui.js";
 import { icon } from "../icons.js";
@@ -32,6 +33,13 @@ export function mount(root) {
   let envInfo = {}; // 项目 id -> { active, profiles, default, notes }：项目里识别出的环境（dev / test / prod …）
 
   const tabsEl = el("div", { class: "tabs" });
+  // 普通鼠标滚轮只会纵向滚：Windows / Linux 上不接管的话，超出宽度的项目组就点不到了
+  tabsEl.addEventListener("wheel", (e) => {
+    const px = wheelToScroll(e, tabsEl);
+    if (px === null) return;
+    e.preventDefault();
+    tabsEl.scrollLeft += px;
+  }, { passive: false });
   const groupTools = el("div", { class: "group-tools" });
   const header = el("div", { class: "sticky-header" }, [
     el("div", { class: "view-header" }, [
@@ -71,6 +79,8 @@ export function mount(root) {
       groups.includes(activeTab);
     if (!exists) activeTab = TAB_ALL;
 
+    // 重建 tab 会让滚动位置回到最左，先记下来，建完再恢复
+    const keepScroll = tabsEl.scrollLeft;
     tabsEl.innerHTML = "";
     const addTab = (id, label, count) => {
       const t = el("button", { class: `tab${id === activeTab ? " active" : ""}`, "data-tab": id, onclick: () => selectTab(id) }, [
@@ -84,7 +94,24 @@ export function mount(root) {
     if (ungrouped().length > 0 && groups.length > 0) addTab(TAB_NONE, "未分组", ungrouped().length);
     tabsEl.append(el("button", { class: "tab tab-add", title: "新增项目组", onclick: () => openGroupDialog() }, "＋"));
 
+    tabsEl.scrollLeft = keepScroll;
+    revealActiveTab();
     renderGroupTools();
+  }
+
+  /** 当前 tab 被挤到可视范围外时（比如从别处切换过来、新建分组后），滚到能看见 */
+  function revealActiveTab() {
+    const tab = tabsEl.querySelector(".tab.active");
+    if (!tab) return;
+    const barLeft = tabsEl.getBoundingClientRect().left;
+    const r = tab.getBoundingClientRect();
+    tabsEl.scrollLeft = scrollLeftToReveal({
+      left: r.left - barLeft + tabsEl.scrollLeft,
+      right: r.right - barLeft + tabsEl.scrollLeft,
+      scrollLeft: tabsEl.scrollLeft,
+      clientWidth: tabsEl.clientWidth,
+      scrollWidth: tabsEl.scrollWidth,
+    });
   }
 
   function selectTab(id) {
